@@ -21,23 +21,29 @@ class Scala212Deps(TargetMacro):
     scalac = self._parse_context.create_object(
       self._jar_library_target_alias,
       name='scalac',
-      jars=[JarDependency(org='org.scala-lang',
-                          name='scala-compiler',
-                          rev=self._FIXED_SCALA_2_12_PATCH_VERSION)],
+      jars=[
+        JarDependency(
+          org='org.scala-lang', name='scala-compiler', rev=self._FIXED_SCALA_2_12_PATCH_VERSION
+        )
+      ],
     )
     repl = self._parse_context.create_object(
       self._jar_library_target_alias,
       name='scala-repl',
-      jars=[JarDependency(org='com.lihaoyi',
-                          name=f'ammonite_{self._FIXED_SCALA_2_12_PATCH_VERSION}',
-                          rev='1.8.2')],
+      jars=[
+        JarDependency(
+          org='com.lihaoyi', name=f'ammonite_{self._FIXED_SCALA_2_12_PATCH_VERSION}', rev='1.8.2'
+        )
+      ],
     )
     library = self._parse_context.create_object(
       self._jar_library_target_alias,
       name='scala-library',
-      jars=[JarDependency(org='org.scala-lang',
-                          name='scala-library',
-                          rev=self._FIXED_SCALA_2_12_PATCH_VERSION)],
+      jars=[
+        JarDependency(
+          org='org.scala-lang', name='scala-library', rev=self._FIXED_SCALA_2_12_PATCH_VERSION
+        )
+      ],
     )
 
     all_wrapped = self._parse_context.create_object(

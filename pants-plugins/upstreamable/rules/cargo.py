@@ -10,8 +10,11 @@ from pants.build_graph.address import Address
 from pants.engine.console import Console
 from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
 from pants.engine.goal import Goal, GoalSubsystem
-from pants.engine.isolated_process import (ExecuteProcessRequest, ExecuteProcessResult,
-                                           FallibleExecuteProcessResult)
+from pants.engine.isolated_process import (
+  ExecuteProcessRequest,
+  ExecuteProcessResult,
+  FallibleExecuteProcessResult,
+)
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargets
 from pants.engine.legacy.structs import CargoTargetAdaptor
 from pants.engine.objects import Collection
@@ -42,10 +45,7 @@ class CargoCommands(Enum):
   test = 'test'
 
   def create_cargo_command_argv(self, launcher_path: RelPath) -> List[str]:
-    intermediate_args = self.match({
-      CargoCommands.build: ['build'],
-      CargoCommands.test: ['test'],
-    })
+    intermediate_args = self.match({CargoCommands.build: ['build'], CargoCommands.test: ['test']})
     return tuple([str(launcher_path.path)] + intermediate_args)
 
 
@@ -62,31 +62,41 @@ class Cargo:
       super().register_options(register)
       # FIXME: make this a BinaryTool using the UrlToFetch capability from
       # https://github.com/pantsbuild/pants/pull/8825!
-      register('--launcher-path', type=str, default=None, fingerprint=True,
-               help='EXPERIMENTAL AND HACKY: Path to the cargo launcher script to execute cargo '
-                    'locally.')
-      register('--release-mode', type=bool, default=False, fingerprint=True,
-               help='EXPERIMENTAL: set whether to build cargo artifacts in debug or release mode.')
+      register(
+        '--launcher-path',
+        type=str,
+        default=None,
+        fingerprint=True,
+        help='EXPERIMENTAL AND HACKY: Path to the cargo launcher script to execute cargo '
+        'locally.',
+      )
+      register(
+        '--release-mode',
+        type=bool,
+        default=False,
+        fingerprint=True,
+        help='EXPERIMENTAL: set whether to build cargo artifacts in debug or release mode.',
+      )
 
     def build(self) -> 'Cargo.Factory':
       options = self.get_options()
-      return Cargo(launcher_path=RelPath(Path(options.launcher_path or 'cargo')),
-                   release_mode=bool(options.release_mode))
+      return Cargo(
+        launcher_path=RelPath(Path(options.launcher_path or 'cargo')),
+        release_mode=bool(options.release_mode),
+      )
 
   @property
   def _release_mode_subdir(self) -> str:
     return 'release' if self.release_mode else 'debug'
 
   def _get_expected_output_binary_file(self, cargo_target: CargoTargetAdaptor) -> str:
-    return os.path.join('target',
-                        self._release_mode_subdir,
-                        str(cargo_target.cargo_output))
+    return os.path.join('target', self._release_mode_subdir, str(cargo_target.cargo_output))
 
   def create_execute_process_request(
-      self,
-      cargo_target: CargoTargetAdaptor,
-      source_root_stripped_sources: SourceRootStrippedSources,
-      command: CargoCommands,
+    self,
+    cargo_target: CargoTargetAdaptor,
+    source_root_stripped_sources: SourceRootStrippedSources,
+    command: CargoCommands,
   ) -> ExecuteProcessRequest:
     ret = ExecuteProcessRequest(
       argv=command.create_cargo_command_argv(self.launcher_path),
@@ -138,13 +148,16 @@ class CargoBuildResult:
 @rule
 async def execute_cargo(buildable_target: CargoTargetAdaptor, cargo: Cargo) -> CargoBuildResult:
   stripped_sources = await Get[SourceRootStrippedSources](
-    HydratedTarget(buildable_target.address, buildable_target, ()))
-  exe_res = await Get[ExecuteProcessResult](ExecuteProcessRequest,
-                                            cargo.create_execute_process_request(
-                                              cargo_target=buildable_target,
-                                              source_root_stripped_sources=stripped_sources,
-                                              command=CargoCommands.build,
-                                            ))
+    HydratedTarget(buildable_target.address, buildable_target, ())
+  )
+  exe_res = await Get[ExecuteProcessResult](
+    ExecuteProcessRequest,
+    cargo.create_execute_process_request(
+      cargo_target=buildable_target,
+      source_root_stripped_sources=stripped_sources,
+      command=CargoCommands.build,
+    ),
+  )
   snapshot = await Get[Snapshot](Digest, exe_res.output_directory_digest)
   return CargoBuildResult(snapshot=snapshot)
 
@@ -158,18 +171,22 @@ async def collect_built_cargo_resources(buildable_target: CargoTargetAdaptor) ->
 @rule
 async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) -> TestResult:
   stripped_sources = await Get[SourceRootStrippedSources](
-    HydratedTarget(testable_target.address, testable_target, ()))
-  exe_res = await Get[FallibleExecuteProcessResult](ExecuteProcessRequest,
-                                                    cargo.create_execute_process_request(
-                                                      cargo_target=testable_target,
-                                                      source_root_stripped_sources=stripped_sources,
-                                                      command=CargoCommands.test,
-                                                    ))
+    HydratedTarget(testable_target.address, testable_target, ())
+  )
+  exe_res = await Get[FallibleExecuteProcessResult](
+    ExecuteProcessRequest,
+    cargo.create_execute_process_request(
+      cargo_target=testable_target,
+      source_root_stripped_sources=stripped_sources,
+      command=CargoCommands.test,
+    ),
+  )
   return TestResult.from_fallible_execute_process_result(exe_res)
 
 
 class BuildRustOptions(GoalSubsystem):
   """???/build rust binaries!"""
+
   name = 'build-rust-binary'
 
 
