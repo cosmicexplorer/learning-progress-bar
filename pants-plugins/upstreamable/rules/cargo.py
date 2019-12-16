@@ -5,29 +5,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-from pants.backend.python.rules.pex_from_target_closure import PythonResourceTarget, PythonResources
+from pants.backend.python.rules.pex_from_target_closure import (
+    PythonResources, PythonResourceTarget)
 from pants.build_graph.address import Address
 from pants.engine.console import Console
 from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
 from pants.engine.goal import Goal, GoalSubsystem
-from pants.engine.isolated_process import (
-  ExecuteProcessRequest,
-  ExecuteProcessResult,
-  FallibleExecuteProcessResult,
-)
+from pants.engine.isolated_process import (ExecuteProcessRequest,
+                                           ExecuteProcessResult,
+                                           FallibleExecuteProcessResult)
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargets
 from pants.engine.legacy.structs import CargoTargetAdaptor
 from pants.engine.objects import Collection
 from pants.engine.parser import SymbolTable
-from pants.engine.rules import RootRule, UnionRule, console_rule, optionable_rule, rule
+from pants.engine.rules import (RootRule, UnionRule, console_rule,
+                                optionable_rule, rule)
 from pants.engine.selectors import Get
 from pants.rules.core.core_test_model import Status, TestResult, TestTarget
 from pants.rules.core.strip_source_root import SourceRootStrippedSources
 from pants.subsystem.subsystem import Subsystem
 from pants.util.collections import Enum
-
 from upstreamable.targets.cargo_subproject import CargoSubproject
-
 
 logger = logging.getLogger(__name__)
 
