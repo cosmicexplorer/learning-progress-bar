@@ -1,0 +1,4 @@
+#+TITLE: inference
+#+STARTUP: showall
+
+The inference engine will receive a discrete event stream from the [[file:../terminal/terminal.org][terminal]], and attempt to solve for a continuous function which attempts to estimate the time expected for the subprocess to complete.

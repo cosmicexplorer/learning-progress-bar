@@ -1,0 +1,4 @@
+#+TITLE: terminal
+#+STARTUP: showall
+
+Receive i/o events from the subprocess as a discrete stream. See [[file:../inference/inference.org][how the inference engine uses this discrete event stream]].

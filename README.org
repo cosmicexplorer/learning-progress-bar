@@ -1,0 +1,5 @@
+#+TITLE: README
+#+STARTUP: showall
+
+* LICENSE
+[[file:./LICENSE][GPL v3.0 or any later version]].
