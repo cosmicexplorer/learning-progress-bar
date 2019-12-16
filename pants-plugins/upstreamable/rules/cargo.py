@@ -70,19 +70,17 @@ class Cargo:
 
     def build(self) -> 'Cargo.Factory':
       options = self.get_options()
-      return Cargo(
-        launcher_path=RelPath(Path(options.launcher_path or 'cargo')),
-        release_mode=bool(options.release_mode),
-      )
+      return Cargo(launcher_path=RelPath(Path(options.launcher_path or 'cargo')),
+                   release_mode=bool(options.release_mode))
 
   @property
-  def release_mode_subdir(self) -> str:
+  def _release_mode_subdir(self) -> str:
     return 'release' if self.release_mode else 'debug'
 
-  def get_expected_output_binary_file(self, cargo_target: CargoTargetAdaptor) -> str:
+  def _get_expected_output_binary_file(self, cargo_target: CargoTargetAdaptor) -> str:
     return os.path.join('target',
-                        self.release_mode_subdir,
-                        str(cargo_target.binary_name))
+                        self._release_mode_subdir,
+                        str(cargo_target.cargo_output))
 
   def create_execute_process_request(
       self,
@@ -98,9 +96,9 @@ class Cargo:
         # FIXME: a way to explicitly say "this is a hacky non-remotable process execution", which
         # automatically adds the PATH to the subprocess env!
         'PATH': os.environ['PATH'],
-        'MODE': self.release_mode_subdir,
+        'MODE': self._release_mode_subdir,
       },
-      output_files=(self.get_expected_output_binary_file(cargo_target),),
+      output_files=(self._get_expected_output_binary_file(cargo_target),),
     )
     logger.debug(f'creating process execution request for cargo: {ret}')
     return ret
