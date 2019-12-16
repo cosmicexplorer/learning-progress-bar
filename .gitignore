@@ -5,3 +5,4 @@
 /.pids/
 /.cache/
 __pycache__/
+/dist/
