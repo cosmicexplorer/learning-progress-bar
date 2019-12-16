@@ -3,3 +3,5 @@
 /logs/
 /.mypy_cache/
 /.pids/
+/.cache/
+__pycache__/
