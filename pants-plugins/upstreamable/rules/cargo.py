@@ -8,19 +8,20 @@ from typing import List
 from pants.backend.python.rules.pex_from_target_closure import (
     PythonResources, PythonResourceTarget)
 from pants.build_graph.address import Address
+from pants.engine.addressable import BuildFileAddresses
 from pants.engine.console import Console
 from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
 from pants.engine.goal import Goal, GoalSubsystem
 from pants.engine.isolated_process import (ExecuteProcessRequest,
                                            ExecuteProcessResult,
                                            FallibleExecuteProcessResult)
-from pants.engine.legacy.graph import HydratedTarget, HydratedTargets
+from pants.engine.legacy.graph import HydratedTarget, HydratedTargets, TransitiveHydratedTargets
 from pants.engine.legacy.structs import CargoTargetAdaptor
 from pants.engine.objects import Collection
 from pants.engine.parser import SymbolTable
 from pants.engine.rules import (RootRule, UnionRule, console_rule,
                                 optionable_rule, rule)
-from pants.engine.selectors import Get
+from pants.engine.selectors import Get, MultiGet
 from pants.rules.core.core_test_model import Status, TestResult, TestTarget
 from pants.rules.core.strip_source_root import SourceRootStrippedSources
 from pants.subsystem.subsystem import Subsystem
@@ -93,12 +94,12 @@ class Cargo:
   def create_execute_process_request(
     self,
     cargo_target: CargoTargetAdaptor,
-    source_root_stripped_sources: SourceRootStrippedSources,
+    source_root_stripped_sources: Digest,
     command: CargoCommands,
   ) -> ExecuteProcessRequest:
     ret = ExecuteProcessRequest(
       argv=command.create_cargo_command_argv(self.launcher_path),
-      input_files=source_root_stripped_sources.snapshot.directory_digest,
+      input_files=source_root_stripped_sources,
       description=f'Execute cargo to build the request {cargo_target}!',
       env={
         # FIXME: a way to explicitly say "this is a hacky non-remotable process execution", which
@@ -145,14 +146,17 @@ class CargoBuildResult:
 
 @rule
 async def execute_cargo(buildable_target: CargoTargetAdaptor, cargo: Cargo) -> CargoBuildResult:
-  stripped_sources = await Get[SourceRootStrippedSources](
-    HydratedTarget(buildable_target.address, buildable_target, ())
-  )
+  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses(
+    (buildable_target.address,) + tuple(buildable_target.dependencies)))
+  all_stripped_sources = await MultiGet(Get[SourceRootStrippedSources](HydratedTarget, ht)
+                                        for ht in thts.closure)
+  merged_stripped_sources = await Get[Digest](DirectoriesToMerge(tuple(s.snapshot.directory_digest
+                                                                       for s in all_stripped_sources)))
   exe_res = await Get[ExecuteProcessResult](
     ExecuteProcessRequest,
     cargo.create_execute_process_request(
       cargo_target=buildable_target,
-      source_root_stripped_sources=stripped_sources,
+      source_root_stripped_sources=merged_stripped_sources,
       command=CargoCommands.build,
     ),
   )
@@ -175,7 +179,7 @@ async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) 
     ExecuteProcessRequest,
     cargo.create_execute_process_request(
       cargo_target=testable_target,
-      source_root_stripped_sources=stripped_sources,
+      source_root_stripped_sources=stripped_sources.snapshot.directory_digest,
       command=CargoCommands.test,
     ),
   )

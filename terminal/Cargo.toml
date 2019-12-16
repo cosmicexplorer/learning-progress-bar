@@ -8,3 +8,9 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
+futures = "0.3.1"
+thrift = "0.13.0"
+
+[build-dependencies]
+cbindgen = "0.12.0"
+walkdir = "2"

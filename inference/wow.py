@@ -1,4 +1,6 @@
 import os
 from pathlib import Path
 
-print(__file__)
+from terminal.streaming_interface.ttypes import OutputType
+
+print(OutputType)

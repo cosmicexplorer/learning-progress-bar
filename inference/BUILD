@@ -2,6 +2,7 @@ python_library(
   dependencies=[
     '3rdparty/python:setuptools',
     'terminal:terminal-wrapper',
+    'terminal:streaming-interface',
   ],
 )
 

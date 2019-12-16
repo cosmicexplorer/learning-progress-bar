@@ -1,5 +1,7 @@
 #![deny(warnings)]
-// Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be copied and pasted across crates, but there doesn't appear to be a way to include inner attributes from a common source.
+// Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be
+// copied and pasted across crates, but there doesn't appear to be a way to include inner attributes
+// from a common source.
 #![deny(
   clippy::all,
   clippy::default_trait_access,
@@ -27,10 +29,40 @@
 // other unsafeness.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+mod streaming_interface;
+mod subprocess_stream;
+
+use std::{collections::HashMap, path::PathBuf};
+
+#[repr(C)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TerminalError(String);
+
+#[repr(C)]
+pub struct ProcessExecutionRequest {
+  argv: Vec<String>,
+  env: HashMap<String, String>,
+  cwd: PathBuf,
+}
+
+#[no_mangle]
+pub extern "C" fn return_string(s: &[u8]) -> &[u8] {
+  &(s[0..5])
+  /* &s.iter().take(5).cloned().collect::<Vec<_>>() */
+}
+
+/* #[repr(C)] */
+/* pub struct */
+
+#[no_mangle]
+pub extern "C" fn start_subprocess() {}
+
+/* fn start_subprocess_streaming() -> Result<SubprocessIOWrapper, > */
+
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
+  #[test]
+  fn it_works() {
+    assert_eq!(2 + 2, 4);
+  }
 }
