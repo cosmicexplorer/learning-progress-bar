@@ -3,5 +3,6 @@ python_library(
   dependencies=[
     '3rdparty/python:pants',
     'pants-plugins/upstreamable/targets',
+    'pants-plugins/upstreamable/rules',
   ],
 )

@@ -1,0 +1,7 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+authors = ["Danny McClanahan <1305167+cosmicexplorer@users.noreply.github.com>"]
+edition = "2018"
+
+[dependencies]
