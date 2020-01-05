@@ -1,3 +1,10 @@
 python_requirements()
 
-pants_requirement()
+python_requirement_library(
+  name='setuptools-floating',
+  requirements=[
+    python_requirement('setuptools'),
+  ],
+)
+
+pants_requirement(name='pants')

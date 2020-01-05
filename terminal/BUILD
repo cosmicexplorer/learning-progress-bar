@@ -1,7 +1,9 @@
 cargo_subproject(
   name='terminal-rust',
   cargo_output_file='libterminal_wrapper.dylib',
-  sources=rglobs('*.toml', '*.rs'),
+  sources=rglobs('*'),
+  # sources=rglobs('*.toml', '*.rs',
+  #                exclude=[zglobs('target/**/*')]),
   cargo_subprojects=[
     'thrift_ffi',
   ],
@@ -11,14 +13,21 @@ cargo_subproject(
   ],
 )
 
-python_dist(
+python_library(
   name='terminal-python',
-  sources=rglobs('*.py', '*.h'),
+  dependencies=[
+    '3rdparty/python:cffi',
+    '3rdparty/python:pants',
+    '3rdparty/python:thrift',
+    '3rdparty/python:setuptools-floating',
+    'thrift_ffi',
+  ],
 )
 
-python_library(
-  name='event-loop',
+python_binary(
+  name='bin',
+  entry_point='event_loop:main',
   dependencies=[
-    ':streaming-interface',
+    ':terminal-python',
   ],
 )

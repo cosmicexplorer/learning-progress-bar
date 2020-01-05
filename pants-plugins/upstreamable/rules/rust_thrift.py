@@ -57,10 +57,7 @@ async def execute_rust_thrift(
 
   all_input_file_paths = (await Get[Snapshot](Digest, merged_stripped_sources)).files
   cur_target_sources = [f for f in all_input_file_paths if f.endswith('.thrift')]
-  expected_output_files = [
-    re.sub(r'\.thrift$', '.rs', f)
-    for f in cur_target_sources
-  ]
+  expected_output_files = [re.sub(r'\.thrift$', '.rs', f) for f in cur_target_sources]
   exe_res = await Get[ExecuteProcessResult](
     ExecuteProcessRequest(
       argv=('thrift', '--gen', 'rs', '-o', '.', *cur_target_sources),
@@ -76,11 +73,15 @@ async def execute_rust_thrift(
 
 @rule
 async def get_rust_thrift_for_subproject(cargo_target: CargoTargetAdaptor) -> RustThriftBuildResult:
-  cur_target_bfa = BuildFileAddress(build_file=None,
-                                    target_name=cargo_target.address.target_name,
-                                    rel_path=os.path.join(cargo_target.address.spec_path, 'BUILD'))
+  cur_target_bfa = BuildFileAddress(
+    build_file=None,
+    target_name=cargo_target.address.target_name,
+    rel_path=os.path.join(cargo_target.address.spec_path, 'BUILD'),
+  )
   thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
-  rust_thrift_targets = await Get[ManyRustThriftLibraryAdaptors](HydratedTargets(tuple(thts.closure)))
+  rust_thrift_targets = await Get[ManyRustThriftLibraryAdaptors](
+    HydratedTargets(tuple(thts.closure))
+  )
   results = await MultiGet(
     Get[RustThriftBuildResult](RustThriftLibraryWrapper, t) for t in rust_thrift_targets
   )

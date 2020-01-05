@@ -10,7 +10,13 @@ from pants.backend.python.rules.pex_from_target_closure import PythonResources, 
 from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import BuildFileAddresses
 from pants.engine.console import Console
-from pants.engine.fs import Digest, DirectoriesToMerge, DirectoryWithPrefixToAdd, MergeDirectoriesStrictness, Snapshot
+from pants.engine.fs import (
+  Digest,
+  DirectoriesToMerge,
+  DirectoryWithPrefixToAdd,
+  MergeDirectoriesStrictness,
+  Snapshot,
+)
 from pants.engine.goal import Goal, GoalSubsystem
 from pants.engine.isolated_process import (
   ExecuteProcessRequest,
@@ -47,11 +53,7 @@ class CargoCommands(Enum):
 
   def create_cargo_command_argv(self, launcher_path: RelPath) -> List[str]:
     intermediate_args = match(self, {CargoCommands.build: ['build'], CargoCommands.test: ['test']})
-    return tuple([
-      str(launcher_path.path),
-      *intermediate_args,
-      '--features', 'pants-injected',
-    ])
+    return tuple([str(launcher_path.path), *intermediate_args, '--features', 'pants-injected'])
 
 
 @dataclass(frozen=True)
@@ -116,8 +118,10 @@ class Cargo:
         'PATH': os.environ['PATH'],
         'MODE': self._release_mode_subdir,
       },
-      output_files=(self._get_expected_output_binary_file(cargo_target),
-                    *self._glob_generated_resources(cargo_target)),
+      output_files=(
+        self._get_expected_output_binary_file(cargo_target),
+        *self._glob_generated_resources(cargo_target),
+      ),
     )
     logger.debug(f'creating process execution request for cargo: {ret}')
     return ret
@@ -148,10 +152,14 @@ class CargoTargetMergedSources:
 
 
 @rule
-async def prepare_cargo_target_sources(cargo_target: CargoTargetAdaptor) -> CargoTargetMergedSources:
-  cur_target_bfa = BuildFileAddress(build_file=None,
-                                    target_name=cargo_target.address.target_name,
-                                    rel_path=os.path.join(cargo_target.address.spec_path, 'BUILD'))
+async def prepare_cargo_target_sources(
+  cargo_target: CargoTargetAdaptor,
+) -> CargoTargetMergedSources:
+  cur_target_bfa = BuildFileAddress(
+    build_file=None,
+    target_name=cargo_target.address.target_name,
+    rel_path=os.path.join(cargo_target.address.spec_path, 'BUILD'),
+  )
 
   # Resources.
   thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
@@ -166,17 +174,19 @@ async def prepare_cargo_target_sources(cargo_target: CargoTargetAdaptor) -> Carg
   # Inject any subprojects.
   all_subproject_digests = []
   for ht in cargo_target.cargo_subprojects:
-    injected_subproject = await Get[Digest](DirectoryWithPrefixToAdd(
-      ht.adaptor.sources.snapshot.directory_digest,
-      prefix=ht.address.target_name,
-    ))
+    injected_subproject = await Get[Digest](
+      DirectoryWithPrefixToAdd(
+        ht.adaptor.sources.snapshot.directory_digest, prefix=ht.address.target_name
+      )
+    )
     all_subproject_digests.append(injected_subproject)
 
-  all_merged_sources = await Get[Digest](DirectoriesToMerge((
-    *all_stripped_sources,
-    thrift_result.snapshot.directory_digest,
-    *all_subproject_digests,
-  ), strictness=MergeDirectoriesStrictness.allow_duplicates))
+  all_merged_sources = await Get[Digest](
+    DirectoriesToMerge(
+      (*all_stripped_sources, thrift_result.snapshot.directory_digest, *all_subproject_digests),
+      strictness=MergeDirectoriesStrictness.allow_duplicates,
+    )
+  )
 
   return CargoTargetMergedSources(all_merged_sources)
 

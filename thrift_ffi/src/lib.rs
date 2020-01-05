@@ -41,8 +41,10 @@ use thrift::{
 };
 
 use std::{
+  ffi::CStr,
   fmt,
   io::{Read, Write},
+  os::raw,
   sync::Arc,
 };
 
@@ -68,9 +70,6 @@ struct BidiThriftClient {
   pub rust_writable: Arc<Mutex<InMemoryThriftClient>>,
 }
 
-/* FIXME: slim this down so that:
-1. this type is the only FFI object,
-2. this type represents a memory buffer usable for thrift communication! */
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct ThriftBufferHandle {
@@ -200,6 +199,14 @@ pub extern "C" fn read_buffer_handle(
     },
     Err(_) => ThriftReadResult::Failed,
   }
+}
+
+#[no_mangle]
+pub extern "C" fn test_str_fn(
+  s: *const raw::c_char,
+) -> u64 {
+  let msg_str = unsafe { CStr::from_ptr(s).to_string_lossy() };
+  msg_str.len() as u64
 }
 
 #[cfg(test)]
