@@ -10,7 +10,7 @@ from pants.backend.python.rules.pex_from_target_closure import PythonResources, 
 from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import BuildFileAddresses
 from pants.engine.console import Console
-from pants.engine.fs import Digest, DirectoriesToMerge, DirectoryWithPrefixToAdd, Snapshot
+from pants.engine.fs import Digest, DirectoriesToMerge, DirectoryWithPrefixToAdd, MergeDirectoriesStrictness, Snapshot
 from pants.engine.goal import Goal, GoalSubsystem
 from pants.engine.isolated_process import (
   ExecuteProcessRequest,
@@ -158,6 +158,7 @@ async def prepare_cargo_target_sources(cargo_target: CargoTargetAdaptor) -> Carg
   all_stripped_sources = await MultiGet(
     Get[SourceRootStrippedSources](HydratedTarget, ht) for ht in thts.closure
   )
+  all_stripped_sources = [s.snapshot.directory_digest for s in all_stripped_sources]
 
   # Thrift generation.
   thrift_result = await Get[RustThriftBuildResult](CargoTargetAdaptor, cargo_target)
@@ -175,7 +176,7 @@ async def prepare_cargo_target_sources(cargo_target: CargoTargetAdaptor) -> Carg
     *all_stripped_sources,
     thrift_result.snapshot.directory_digest,
     *all_subproject_digests,
-  )))
+  ), strictness=MergeDirectoriesStrictness.allow_duplicates))
 
   return CargoTargetMergedSources(all_merged_sources)
 
@@ -193,7 +194,7 @@ async def execute_cargo(buildable_target: CargoTargetAdaptor, cargo: Cargo) -> C
     ExecuteProcessRequest,
     cargo.create_execute_process_request(
       cargo_target=buildable_target,
-      source_root_stripped_sources=all_merged_sources,
+      source_root_stripped_sources=all_merged_sources.digest,
       command=CargoCommands.build,
     ),
   )
@@ -215,7 +216,7 @@ async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) 
     ExecuteProcessRequest,
     cargo.create_execute_process_request(
       cargo_target=testable_target,
-      source_root_stripped_sources=all_merged_sources,
+      source_root_stripped_sources=all_merged_sources.digest,
       command=CargoCommands.test,
     ),
   )
