@@ -29,6 +29,9 @@
 // other unsafeness.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+#[cfg(not(feature = "pants-injected"))]
+compile_error!("This crate currently requires the \"pants-injected\" feature to be activated!");
+
 /* mod streaming_interface; */
 
 /* use streaming_interface::*; */

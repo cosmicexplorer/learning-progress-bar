@@ -10,7 +10,7 @@ from pants.backend.python.rules.pex_from_target_closure import PythonResources, 
 from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import BuildFileAddresses
 from pants.engine.console import Console
-from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
+from pants.engine.fs import Digest, DirectoriesToMerge, DirectoryWithPrefixToAdd, Snapshot
 from pants.engine.goal import Goal, GoalSubsystem
 from pants.engine.isolated_process import (
   ExecuteProcessRequest,
@@ -50,6 +50,7 @@ class CargoCommands(Enum):
     return tuple([
       str(launcher_path.path),
       *intermediate_args,
+      '--features', 'pants-injected',
     ])
 
 
@@ -142,28 +143,51 @@ def filter_cargo_buildable_targets(hts: HydratedTargets, cargo: Cargo) -> ManyCa
 
 
 @dataclass(frozen=True)
+class CargoTargetMergedSources:
+  digest: Digest
+
+
+@rule
+async def prepare_cargo_target_sources(cargo_target: CargoTargetAdaptor) -> CargoTargetMergedSources:
+  cur_target_bfa = BuildFileAddress(build_file=None,
+                                    target_name=cargo_target.address.target_name,
+                                    rel_path=os.path.join(cargo_target.address.spec_path, 'BUILD'))
+
+  # Resources.
+  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
+  all_stripped_sources = await MultiGet(
+    Get[SourceRootStrippedSources](HydratedTarget, ht) for ht in thts.closure
+  )
+
+  # Thrift generation.
+  thrift_result = await Get[RustThriftBuildResult](CargoTargetAdaptor, cargo_target)
+
+  # Inject any subprojects.
+  all_subproject_digests = []
+  for ht in cargo_target.cargo_subprojects:
+    injected_subproject = await Get[Digest](DirectoryWithPrefixToAdd(
+      ht.adaptor.sources.snapshot.directory_digest,
+      prefix=ht.address.target_name,
+    ))
+    all_subproject_digests.append(injected_subproject)
+
+  all_merged_sources = await Get[Digest](DirectoriesToMerge((
+    *all_stripped_sources,
+    thrift_result.snapshot.directory_digest,
+    *all_subproject_digests,
+  )))
+
+  return CargoTargetMergedSources(all_merged_sources)
+
+
+@dataclass(frozen=True)
 class CargoBuildResult:
   snapshot: Snapshot
 
 
 @rule
 async def execute_cargo(buildable_target: CargoTargetAdaptor, cargo: Cargo) -> CargoBuildResult:
-  cur_target_bfa = BuildFileAddress(build_file=None,
-                                    target_name=buildable_target.address.target_name,
-                                    rel_path=os.path.join(buildable_target.address.spec_path, 'BUILD'))
-  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
-  all_stripped_sources = await MultiGet(
-    Get[SourceRootStrippedSources](HydratedTarget, ht) for ht in thts.closure
-  )
-  merged_stripped_sources = await Get[Digest](
-    DirectoriesToMerge(tuple(s.snapshot.directory_digest for s in all_stripped_sources))
-  )
-
-  thrift_results = await Get[RustThriftBuildResult](CargoTargetAdaptor, buildable_target)
-
-  all_merged_sources = await Get[Digest](
-    DirectoriesToMerge((merged_stripped_sources, thrift_results.snapshot.directory_digest))
-  )
+  all_merged_sources = await Get[CargoTargetMergedSources](CargoTargetAdaptor, buildable_target)
 
   exe_res = await Get[ExecuteProcessResult](
     ExecuteProcessRequest,
@@ -185,22 +209,7 @@ async def collect_built_cargo_resources(buildable_target: CargoTargetAdaptor) ->
 
 @rule
 async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) -> TestResult:
-  cur_target_bfa = BuildFileAddress(build_file=None,
-                                    target_name=testable_target.address.target_name,
-                                    rel_path=os.path.join(testable_target.address.spec_path, 'BUILD'))
-  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
-  all_stripped_sources = await MultiGet(
-    Get[SourceRootStrippedSources](HydratedTarget, ht) for ht in thts.closure
-  )
-  merged_stripped_sources = await Get[Digest](
-    DirectoriesToMerge(tuple(s.snapshot.directory_digest for s in all_stripped_sources))
-  )
-
-  thrift_results = await Get[RustThriftBuildResult](CargoTargetAdaptor, testable_target)
-
-  all_merged_sources = await Get[Digest](
-    DirectoriesToMerge((merged_stripped_sources, thrift_results.snapshot.directory_digest))
-  )
+  all_merged_sources = await Get[CargoTargetMergedSources](CargoTargetAdaptor, testable_target)
 
   exe_res = await Get[FallibleExecuteProcessResult](
     ExecuteProcessRequest,
@@ -248,6 +257,7 @@ def rules():
     UnionRule(PythonResourceTarget, CargoTargetAdaptor),
     UnionRule(TestTarget, CargoTargetAdaptor),
     filter_cargo_buildable_targets,
+    prepare_cargo_target_sources,
     execute_cargo,
     collect_built_cargo_resources,
     execute_cargo_test,
