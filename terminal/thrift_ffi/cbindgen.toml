@@ -1,0 +1,4 @@
+include_guard = "__THRIFT_FFI_CBINDGEN_H__"
+include_version = true
+line_length = 100
+language = "C"

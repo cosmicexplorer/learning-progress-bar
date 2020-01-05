@@ -17,14 +17,14 @@ pub struct InternKey(u64);
 
 pub struct Interns<T> {
   mapping: HashMap<InternKey, T>,
-  _idx: u64,
+  idx: u64,
 }
 
 impl<T> Interns<T> {
   pub fn new() -> Interns<T> {
     Interns {
       mapping: HashMap::new(),
-      _idx: 0,
+      idx: 0,
     }
   }
 
@@ -39,8 +39,8 @@ impl<T> Interns<T> {
 impl<T: Debug> Interns<T> {
   pub fn intern(&mut self, value: T) -> Result<InternKey, InternError> {
     let key = {
-      let idx = self._idx;
-      self._idx += 1;
+      let idx = self.idx;
+      self.idx += 1;
       InternKey(idx)
     };
     if let Some(previous_value) = self.mapping.insert(key, value) {

@@ -47,7 +47,10 @@ class CargoCommands(Enum):
 
   def create_cargo_command_argv(self, launcher_path: RelPath) -> List[str]:
     intermediate_args = match(self, {CargoCommands.build: ['build'], CargoCommands.test: ['test']})
-    return tuple([str(launcher_path.path)] + intermediate_args)
+    return tuple([
+      str(launcher_path.path),
+      *intermediate_args,
+    ])
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,9 @@ class Cargo:
   def _get_expected_output_binary_file(self, cargo_target: CargoTargetAdaptor) -> str:
     return os.path.join('target', self._release_mode_subdir, str(cargo_target.cargo_output))
 
+  def _glob_generated_resources(self, cargo_target: CargoTargetAdaptor) -> List[str]:
+    return list(cargo_target.generated_resources.include)
+
   def create_execute_process_request(
     self,
     cargo_target: CargoTargetAdaptor,
@@ -109,7 +115,8 @@ class Cargo:
         'PATH': os.environ['PATH'],
         'MODE': self._release_mode_subdir,
       },
-      output_files=(self._get_expected_output_binary_file(cargo_target),),
+      output_files=(self._get_expected_output_binary_file(cargo_target),
+                    *self._glob_generated_resources(cargo_target)),
     )
     logger.debug(f'creating process execution request for cargo: {ret}')
     return ret
@@ -137,13 +144,6 @@ def filter_cargo_buildable_targets(hts: HydratedTargets, cargo: Cargo) -> ManyCa
 @dataclass(frozen=True)
 class CargoBuildResult:
   snapshot: Snapshot
-
-  def __post_init__(self):
-    """Assert that the snapshot contains exactly the single output file requested."""
-    try:
-      assert len(self.snapshot.files) == 1
-    except AssertionError as e:
-      raise TypeError(f'failed to validate {self.__class__}: {e}. self was: {self}') from e
 
 
 @rule

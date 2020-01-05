@@ -100,7 +100,7 @@ impl ThriftBufferHandle {
     Ok(ThriftBufferHandle { key })
   }
 
-  fn get_thrift_client(&self) -> Result<BidiThriftClient, ThriftStreamCreationError> {
+  fn get_thrift_client(self) -> Result<BidiThriftClient, ThriftStreamCreationError> {
     let interns = (*THRIFT_BUFFER_MAPPING).lock();
     let ret = interns.get(self.key)?;
     Ok(ret.clone())
@@ -121,6 +121,7 @@ pub enum ThriftFFIClientCreationResult {
   Failed,
 }
 
+#[no_mangle]
 pub extern "C" fn make_buffer_handle(capacity: usize) -> ThriftFFIClientCreationResult {
   match ThriftBufferHandle::create_bidi_ffi_client(capacity) {
     Ok(client) => ThriftFFIClientCreationResult::Created(client),
@@ -143,16 +144,16 @@ pub enum ThriftWriteResult {
   Failed,
 }
 
+#[no_mangle]
 pub extern "C" fn write_buffer_handle(
   handle: ThriftBufferHandle,
   chunk: ThriftChunk,
 ) -> ThriftWriteResult
 {
-  let client = match handle.get_thrift_client() {
-    Ok(client) => client,
-    Err(_) => {
-      return ThriftWriteResult::Failed;
-    },
+  let client = if let Ok(client) = handle.get_thrift_client() {
+    client
+  } else {
+    return ThriftWriteResult::Failed;
   };
 
   let mut channel = (*client.ffi_language_writable).lock();
@@ -174,16 +175,16 @@ pub enum ThriftReadResult {
   Failed,
 }
 
+#[no_mangle]
 pub extern "C" fn read_buffer_handle(
   handle: ThriftBufferHandle,
   mut chunk: ThriftChunk,
 ) -> ThriftReadResult
 {
-  let client = match handle.get_thrift_client() {
-    Ok(client) => client,
-    Err(_) => {
-      return ThriftReadResult::Failed;
-    },
+  let client = if let Ok(client) = handle.get_thrift_client() {
+    client
+  } else {
+    return ThriftReadResult::Failed;
   };
 
   let mut channel = (*client.ffi_language_writable).lock();

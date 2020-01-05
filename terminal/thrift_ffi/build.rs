@@ -25,7 +25,6 @@
 
 use std::env;
 use std::io;
-use std::path::Path;
 
 use cbindgen;
 
@@ -55,29 +54,7 @@ impl From<cbindgen::Error> for BindingsCreationError {
 }
 
 fn main() -> Result<(), BindingsCreationError> {
-  let bindings_config_path = Path::new("cbindgen.toml");
-  mark_for_change_detection(&bindings_config_path);
-  mark_for_change_detection(Path::new("./src"));
-  mark_for_change_detection(Path::new("./thrift_ffi"));
-
-  let bindings_output_path = Path::new("src/generated_bindings.h");
-  let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
-  cbindgen::generate(crate_dir.clone())?.write_to_file(bindings_output_path);
-
+  let crate_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+  cbindgen::generate(crate_dir)?.write_to_file("thrift_ffi_bindings.h");
   Ok(())
-}
-
-
-fn mark_for_change_detection(path: &Path) {
-  // Restrict re-compilation check to just our input files.
-  // See: http://doc.crates.io/build-script.html#outputs-of-the-build-script
-  if !path.exists() {
-    panic!(
-      "Cannot mark non-existing path for change detection: {}",
-      path.display()
-    );
-  }
-  for file in walkdir::WalkDir::new(path) {
-    println!("cargo:rerun-if-changed={}", file.unwrap().path().display());
-  }
 }
