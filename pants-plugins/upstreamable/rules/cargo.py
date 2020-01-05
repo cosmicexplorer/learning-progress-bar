@@ -2,30 +2,32 @@ import dataclasses
 import logging
 import os
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import List
 
-from pants.backend.python.rules.pex_from_target_closure import (
-    PythonResources, PythonResourceTarget)
-from pants.build_graph.address import Address
+from pants.backend.python.rules.pex_from_target_closure import PythonResources, PythonResourceTarget
+from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import BuildFileAddresses
 from pants.engine.console import Console
 from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
 from pants.engine.goal import Goal, GoalSubsystem
-from pants.engine.isolated_process import (ExecuteProcessRequest,
-                                           ExecuteProcessResult,
-                                           FallibleExecuteProcessResult)
+from pants.engine.isolated_process import (
+  ExecuteProcessRequest,
+  ExecuteProcessResult,
+  FallibleExecuteProcessResult,
+)
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargets, TransitiveHydratedTargets
 from pants.engine.legacy.structs import CargoTargetAdaptor
 from pants.engine.objects import Collection
 from pants.engine.parser import SymbolTable
-from pants.engine.rules import (RootRule, UnionRule, console_rule,
-                                optionable_rule, rule)
+from pants.engine.rules import RootRule, UnionRule, console_rule, optionable_rule, rule
 from pants.engine.selectors import Get, MultiGet
 from pants.rules.core.core_test_model import Status, TestResult, TestTarget
 from pants.rules.core.strip_source_root import SourceRootStrippedSources
 from pants.subsystem.subsystem import Subsystem
-from pants.util.collections import Enum
+from pants.util.enums import match
+from upstreamable.rules.rust_thrift import RustThriftBuildResult
 from upstreamable.targets.cargo_subproject import CargoSubproject
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ class CargoCommands(Enum):
   test = 'test'
 
   def create_cargo_command_argv(self, launcher_path: RelPath) -> List[str]:
-    intermediate_args = self.match({CargoCommands.build: ['build'], CargoCommands.test: ['test']})
+    intermediate_args = match(self, {CargoCommands.build: ['build'], CargoCommands.test: ['test']})
     return tuple([str(launcher_path.path)] + intermediate_args)
 
 
@@ -146,17 +148,28 @@ class CargoBuildResult:
 
 @rule
 async def execute_cargo(buildable_target: CargoTargetAdaptor, cargo: Cargo) -> CargoBuildResult:
-  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses(
-    (buildable_target.address,) + tuple(buildable_target.dependencies)))
-  all_stripped_sources = await MultiGet(Get[SourceRootStrippedSources](HydratedTarget, ht)
-                                        for ht in thts.closure)
-  merged_stripped_sources = await Get[Digest](DirectoriesToMerge(tuple(s.snapshot.directory_digest
-                                                                       for s in all_stripped_sources)))
+  cur_target_bfa = BuildFileAddress(build_file=None,
+                                    target_name=buildable_target.address.target_name,
+                                    rel_path=os.path.join(buildable_target.address.spec_path, 'BUILD'))
+  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
+  all_stripped_sources = await MultiGet(
+    Get[SourceRootStrippedSources](HydratedTarget, ht) for ht in thts.closure
+  )
+  merged_stripped_sources = await Get[Digest](
+    DirectoriesToMerge(tuple(s.snapshot.directory_digest for s in all_stripped_sources))
+  )
+
+  thrift_results = await Get[RustThriftBuildResult](CargoTargetAdaptor, buildable_target)
+
+  all_merged_sources = await Get[Digest](
+    DirectoriesToMerge((merged_stripped_sources, thrift_results.snapshot.directory_digest))
+  )
+
   exe_res = await Get[ExecuteProcessResult](
     ExecuteProcessRequest,
     cargo.create_execute_process_request(
       cargo_target=buildable_target,
-      source_root_stripped_sources=merged_stripped_sources,
+      source_root_stripped_sources=all_merged_sources,
       command=CargoCommands.build,
     ),
   )
@@ -172,32 +185,58 @@ async def collect_built_cargo_resources(buildable_target: CargoTargetAdaptor) ->
 
 @rule
 async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) -> TestResult:
-  stripped_sources = await Get[SourceRootStrippedSources](
-    HydratedTarget(testable_target.address, testable_target, ())
+  cur_target_bfa = BuildFileAddress(build_file=None,
+                                    target_name=testable_target.address.target_name,
+                                    rel_path=os.path.join(testable_target.address.spec_path, 'BUILD'))
+  thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
+  all_stripped_sources = await MultiGet(
+    Get[SourceRootStrippedSources](HydratedTarget, ht) for ht in thts.closure
   )
+  merged_stripped_sources = await Get[Digest](
+    DirectoriesToMerge(tuple(s.snapshot.directory_digest for s in all_stripped_sources))
+  )
+
+  thrift_results = await Get[RustThriftBuildResult](CargoTargetAdaptor, testable_target)
+
+  all_merged_sources = await Get[Digest](
+    DirectoriesToMerge((merged_stripped_sources, thrift_results.snapshot.directory_digest))
+  )
+
   exe_res = await Get[FallibleExecuteProcessResult](
     ExecuteProcessRequest,
     cargo.create_execute_process_request(
       cargo_target=testable_target,
-      source_root_stripped_sources=stripped_sources.snapshot.directory_digest,
+      source_root_stripped_sources=all_merged_sources,
       command=CargoCommands.test,
     ),
   )
   return TestResult.from_fallible_execute_process_result(exe_res)
 
 
-class BuildRustOptions(GoalSubsystem):
-  """???/build rust binaries!"""
+# class BuildRustOptions(GoalSubsystem):
+#   """???/build rust binaries!"""
 
-  name = 'build-rust-binary'
+#   name = 'build-rust-binary'
+
+#   @classmethod
+#   def register_options(cls, register):
+#     super().register_options(register)
+#     register('--command', type=CargoCommands, default=CargoCommands.build, help='???')
 
 
-class BuildRust(Goal):
-  subsystem_cls = BuildRustOptions
-
+# class BuildRust(Goal):
+#   subsystem_cls = BuildRustOptions
 
 # @console_rule
-# async def build_rust(console: Console, cargo: Cargo, options: BuildRustOptions) -> BuildRust:
+# async def build_rust(console: Console, hts: HydratedTargets, options: BuildRustOptions) -> BuildRust:
+#   cargo_targets = await Get[ManyCargoTargetAdaptors](HydratedTargets, hts)
+
+#   command = options.values.command
+#   if command == CargoCommands.test:
+#     test_results = await MultiGet(Get[TestResult](CargoTargetAdaptor, t) for t in cargo_targets)
+#   else:
+#     assert command == CargoCommands.build
+#     build_results = await MultiGet(Get[CargoBuildResult](CargoTargetAdaptor, t) for t in cargo_targets)
 #   return BuildRust(exit_code=0)
 
 

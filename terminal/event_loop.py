@@ -7,8 +7,6 @@ from thrift.transport.TTransport import TTransportBase
 
 @dataclass(frozen=True)
 class FFIBidiTransport(TTransportBase):
-  
-
   def isOpen(self):
     pass
 
@@ -24,7 +22,7 @@ class FFIBidiTransport(TTransportBase):
   def readAll(self, sz):
     buff = b''
     have = 0
-    while (have < sz):
+    while have < sz:
       chunk = self.read(sz - have)
       chunkLen = len(chunk)
       have += chunkLen

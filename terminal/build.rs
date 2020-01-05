@@ -24,10 +24,8 @@
 #![allow(clippy::mutex_atomic)]
 
 use std::env;
-use std::fs;
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
+use std::io;
+use std::path::Path;
 
 use cbindgen;
 
@@ -59,46 +57,12 @@ impl From<cbindgen::Error> for BindingsCreationError {
 fn main() -> Result<(), BindingsCreationError> {
   let bindings_config_path = Path::new("cbindgen.toml");
   mark_for_change_detection(&bindings_config_path);
-  mark_for_change_detection(Path::new("src"));
+  mark_for_change_detection(Path::new("./src"));
+  mark_for_change_detection(Path::new("./thrift_ffi"));
 
   let bindings_output_path = Path::new("src/generated_bindings.h");
   let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
   cbindgen::generate(crate_dir.clone())?.write_to_file(bindings_output_path);
-
-  let thrift_input_path = Path::new("src/streaming_interface.thrift");
-  let thrift_output_dir = PathBuf::from(crate_dir).join("src");
-  let thrift_output_path = thrift_output_dir.join("streaming_interface.rs");
-
-  if thrift_output_path.exists() && !thrift_input_path.exists() {
-    /* We are running in a hermetic sandbox. Not 100% clear why the streaming_interface.thrift file
-     * doesn't appear to exist. */
-    return Ok(())
-  }
-
-  mark_for_change_detection(&thrift_input_path);
-
-  let result = Command::new("thrift")
-    .arg("--gen")
-    .arg("rs")
-    .arg("-o")
-    .arg(thrift_output_dir.clone())
-    .arg(thrift_input_path)
-    .status()?;
-  if !result.success() {
-    let exit_code = result.code();
-    eprintln!(
-      "Execution of thrift rust generation failed with exit code {:?}",
-      exit_code
-    );
-    exit(exit_code.unwrap_or(1));
-  }
-
-  let mut buffer = String::new();
-  fs::File::open(thrift_output_path.clone())?.read_to_string(&mut buffer)?;
-
-  let dead_code_allowance = "#![allow(dead_code)]";
-  let new_file_contents = format!("{}\n{}", dead_code_allowance, buffer);
-  fs::File::create(thrift_output_path)?.write_all(new_file_contents.as_bytes())?;
 
   Ok(())
 }

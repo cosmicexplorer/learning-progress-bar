@@ -4,13 +4,8 @@ cargo_subproject(
   sources=rglobs('*.toml', '*.rs'),
   dependencies=[
     '//:rust-toolchain',
-    ':streaming-interface',
+    'terminal/thrift:rust',
   ],
-)
-
-python_thrift_library(
-  name='streaming-interface',
-  sources=globs('src/*.thrift'),
 )
 
 python_library(

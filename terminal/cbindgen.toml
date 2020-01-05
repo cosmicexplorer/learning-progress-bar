@@ -10,4 +10,5 @@ line_length = 100
 language = "C"
 
 [parse]
-parse_deps = false
+parse_deps = true
+include = ["thrift_ffi"]

@@ -527,6 +527,7 @@ dependencies = [
  "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.6.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "thrift 0.13.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thrift_ffi 0.1.0",
  "walkdir 2.2.9 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
