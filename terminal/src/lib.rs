@@ -30,32 +30,17 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod streaming_interface;
-mod subprocess_stream;
 
-use std::{collections::HashMap, path::PathBuf};
+/* use streaming_interface::*; */
 
-#[repr(C)]
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct TerminalError(String);
+/* /\* TODO: bootstrap the "skeleton" FFI just enough to set up a thrift */
+/*
+ * * connection, then use thrift for the rest of the communication! *\/ */
+/* #[no_mangle] */
+/* pub extern "C" fn open_unix_socket(socket_filename: CStr) -> &OsStr {} */
 
-#[repr(C)]
-pub struct ProcessExecutionRequest {
-  argv: Vec<String>,
-  env: HashMap<String, String>,
-  cwd: PathBuf,
-}
-
-#[no_mangle]
-pub extern "C" fn return_string(s: &[u8]) -> &[u8] {
-  &(s[0..5])
-  /* &s.iter().take(5).cloned().collect::<Vec<_>>() */
-}
-
-/* #[repr(C)] */
-/* pub struct */
-
-#[no_mangle]
-pub extern "C" fn start_subprocess() {}
+/* #[no_mangle] */
+/* pub extern "C" fn start_subprocess() {} */
 
 /* fn start_subprocess_streaming() -> Result<SubprocessIOWrapper, > */
 

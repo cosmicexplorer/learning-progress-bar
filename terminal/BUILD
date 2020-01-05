@@ -12,3 +12,10 @@ python_thrift_library(
   name='streaming-interface',
   sources=globs('src/*.thrift'),
 )
+
+python_library(
+  name='event-loop',
+  dependencies=[
+    ':streaming-interface',
+  ],
+)

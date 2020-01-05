@@ -41,10 +41,33 @@ struct SubprocessEvent {
   4: optional ExitStatus exit_status
 }
 
-// There is assumed to be some mapping from RunId -> RunInfo elsewhere!
-struct RunInfo {
+// There is assumed to be some mapping from RunId -> ProcessExecutionRequest elsewhere!
+struct ProcessExecutionRequest {
   1: optional list<string> argv
   2: optional map<string, string> env
   // The absolute time of when the run begins, in seconds.
   3: optional i64 unix_epoch_seconds
+  4: optional string cwd
+}
+
+exception CreationError {
+  1: optional string description
+}
+
+exception ExecutionError {
+  1: optional string description
+}
+
+exception ProgramHasEnded {
+  1: optional i32 exit_code
+  2: optional TimingWithinRun when_it_was_completed
+}
+
+service TerminalWrapper {
+  RunId beginExecution(1: ProcessExecutionRequest exe_req)
+    throws (1: CreationError creation_error)
+
+  SubprocessEvent getNextEvent()
+    throws (1: ProgramHasEnded program_has_ended
+            2: ExecutionError exe_error)
 }

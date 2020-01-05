@@ -11,6 +11,7 @@ python_binary(
   source='wow.py',
   dependencies=[
     ':inference',
+    '3rdparty/python:cffi',
   ],
   zip_safe=False,
 )

@@ -2,48 +2,44 @@ import asyncio
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
-from pants.util.collections import Enum
-
-
-class EventTypes(Enum):
-  start = 'start'
-  end = 'end'
-  output = 'output'
+from thrift.transport.TTransport import TTransportBase
 
 
 @dataclass(frozen=True)
-class UnixTimestamp:
-  """???/absolute time of the event, at lower (1-second) resolution"""
-  epoch_seconds: long
+class FFIBidiTransport(TTransportBase):
+  
 
+  def isOpen(self):
+    pass
 
-@dataclass(frozen=True)
-class HighResolutionRelativeTime:
-  """???/higher-resolution time relative to the start of the run"""
-  milliseconds: long
+  def open(self):
+    pass
 
+  def close(self):
+    pass
 
-class OutputTypes(Enum):
-  stdout = 'stdout'
-  stderr = 'stderr'
+  def read(self, sz):
+    pass
 
+  def readAll(self, sz):
+    buff = b''
+    have = 0
+    while (have < sz):
+      chunk = self.read(sz - have)
+      chunkLen = len(chunk)
+      have += chunkLen
+      buff += chunk
 
-@dataclass(frozen=True)
-class OutputEvent:
-  event_type: OutputTypes
-  output_contents: bytes
+      if chunkLen == 0:
+        raise EOFError()
 
+    return buff
 
-@dataclass(frozen=True)
+  def write(self, buf):
+    pass
 
-
-
-@dataclass(frozen=True)
-class TerminalEvent:
-  event_type: EventTypes
-  unix_timestamp: UnixTimestamp
-  relative_time: HighResolutionRelativeTime
-  output_event: Optional[OutputEvent]
+  def flush(self):
+    pass
 
 
 async def event_loop() -> AsyncGenerator[TerminalEvent]:
