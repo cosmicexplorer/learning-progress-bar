@@ -1,10 +1,11 @@
 import dataclasses
 import logging
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from pants.backend.python.rules.pex_from_target_closure import PythonResources, PythonResourceTarget
 from pants.build_graph.address import Address, BuildFileAddress
@@ -33,7 +34,7 @@ from pants.rules.core.core_test_model import Status, TestResult, TestTarget
 from pants.rules.core.strip_source_root import SourceRootStrippedSources
 from pants.subsystem.subsystem import Subsystem
 from pants.util.enums import match
-from upstreamable.rules.rust_thrift import RustThriftBuildResult
+from upstreamable.rules.rust_thrift import ThriftTargetRequest, ThriftBuildResult, ThriftLanguage
 from upstreamable.targets.cargo_subproject import CargoSubproject
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class CargoCommands(Enum):
 
   def create_cargo_command_argv(self, launcher_path: RelPath) -> List[str]:
     intermediate_args = match(self, {CargoCommands.build: ['build'], CargoCommands.test: ['test']})
-    return tuple([str(launcher_path.path), *intermediate_args, '--features', 'pants-injected'])
+    return [str(launcher_path.path), *intermediate_args]
 
 
 @dataclass(frozen=True)
@@ -102,14 +103,28 @@ class Cargo:
   def _glob_generated_resources(self, cargo_target: CargoTargetAdaptor) -> List[str]:
     return list(cargo_target.generated_resources.include)
 
+  @property
+  def _output_dir(self) -> str:
+    return f'target/{self._release_mode_subdir}'
+
+  def _rewrite_subproject_output_file(self, output_file: str) -> str:
+    ret = re.sub(f'^({self._output_dir})', '', output_file)
+    return f'{self._output_dir}/deps/{ret}'
+
   def create_execute_process_request(
     self,
     cargo_target: CargoTargetAdaptor,
     source_root_stripped_sources: Digest,
     command: CargoCommands,
+    extra_cargo_output_file_paths: Tuple[str, ...],
   ) -> ExecuteProcessRequest:
+    argv = command.create_cargo_command_argv(self.launcher_path)
+    argv.extend(['--features', ' '.join([
+      'pants-injected',
+      *cargo_target.features,
+    ])])
     ret = ExecuteProcessRequest(
-      argv=command.create_cargo_command_argv(self.launcher_path),
+      argv=tuple(argv),
       input_files=source_root_stripped_sources,
       description=f'Execute cargo to build the request {cargo_target}!',
       env={
@@ -121,6 +136,7 @@ class Cargo:
       output_files=(
         self._get_expected_output_binary_file(cargo_target),
         *self._glob_generated_resources(cargo_target),
+        *(self._rewrite_subproject_output_file(str(f)) for f in extra_cargo_output_file_paths),
       ),
     )
     logger.debug(f'creating process execution request for cargo: {ret}')
@@ -149,6 +165,7 @@ def filter_cargo_buildable_targets(hts: HydratedTargets, cargo: Cargo) -> ManyCa
 @dataclass(frozen=True)
 class CargoTargetMergedSources:
   digest: Digest
+  cargo_output_file_paths: Tuple[str, ...]
 
 
 @rule
@@ -169,17 +186,21 @@ async def prepare_cargo_target_sources(
   all_stripped_sources = [s.snapshot.directory_digest for s in all_stripped_sources]
 
   # Thrift generation.
-  thrift_result = await Get[RustThriftBuildResult](CargoTargetAdaptor, cargo_target)
+  thrift_result = await Get[ThriftBuildResult](ThriftTargetRequest(
+    target=cargo_target,
+    language=ThriftLanguage.rust,
+  ))
 
   # Inject any subprojects.
-  all_subproject_digests = []
-  for ht in cargo_target.cargo_subprojects:
-    injected_subproject = await Get[Digest](
-      DirectoryWithPrefixToAdd(
-        ht.adaptor.sources.snapshot.directory_digest, prefix=ht.address.target_name
-      )
-    )
-    all_subproject_digests.append(injected_subproject)
+  all_subproject_digests = [
+    ht.adaptor.sources.snapshot.directory_digest
+    for ht in cargo_target.cargo_subprojects
+  ]
+
+  all_subproject_output_files = [
+    ht.adaptor.cargo_output
+    for ht in cargo_target.cargo_subprojects
+  ]
 
   all_merged_sources = await Get[Digest](
     DirectoriesToMerge(
@@ -188,7 +209,9 @@ async def prepare_cargo_target_sources(
     )
   )
 
-  return CargoTargetMergedSources(all_merged_sources)
+  return CargoTargetMergedSources(
+    digest=all_merged_sources,
+    cargo_output_file_paths=tuple(all_subproject_output_files))
 
 
 @dataclass(frozen=True)
@@ -206,6 +229,7 @@ async def execute_cargo(buildable_target: CargoTargetAdaptor, cargo: Cargo) -> C
       cargo_target=buildable_target,
       source_root_stripped_sources=all_merged_sources.digest,
       command=CargoCommands.build,
+      extra_cargo_output_file_paths=all_merged_sources.cargo_output_file_paths,
     ),
   )
   snapshot = await Get[Snapshot](Digest, exe_res.output_directory_digest)

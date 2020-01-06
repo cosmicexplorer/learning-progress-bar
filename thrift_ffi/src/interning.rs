@@ -1,6 +1,8 @@
 use super::ThriftStreamCreationError;
 
-use std::{collections::HashMap, fmt::Debug};
+use parking_lot::Mutex;
+
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InternError(String);
@@ -16,7 +18,7 @@ pub struct InternKey(u64);
 /* Eq, PartialEq, Hash */
 
 pub struct Interns<T> {
-  mapping: HashMap<InternKey, T>,
+  mapping: HashMap<InternKey, Arc<Mutex<T>>>,
   idx: u64,
 }
 
@@ -28,12 +30,18 @@ impl<T> Interns<T> {
     }
   }
 
-  pub fn get(&self, key: InternKey) -> Result<&T, InternError> {
+  pub fn get(&self, key: InternKey) -> Result<Arc<Mutex<T>>, InternError> {
     self
       .mapping
       .get(&key)
+      .map(|val| Arc::clone(val))
       .ok_or_else(|| InternError(format!("could not find interned key {:?}", key)))
   }
+}
+
+pub enum UninternResult {
+  SuccessfullyUninterned,
+  DoubleFreed,
 }
 
 impl<T: Debug> Interns<T> {
@@ -43,13 +51,22 @@ impl<T: Debug> Interns<T> {
       self.idx += 1;
       InternKey(idx)
     };
-    if let Some(previous_value) = self.mapping.insert(key, value) {
+    let wrapped = Arc::new(Mutex::new(value));
+    if let Some(previous_value) = self.mapping.insert(key, wrapped) {
       Err(InternError(format!(
         "key {:?} should not exist already, but did! previous value: {:?}",
         key, previous_value
       )))
     } else {
       Ok(key)
+    }
+  }
+
+  pub fn garbage_collect(&mut self, key: InternKey) -> UninternResult {
+    if self.mapping.remove(&key).is_some() {
+      UninternResult::SuccessfullyUninterned
+    } else {
+      UninternResult::DoubleFreed
     }
   }
 }

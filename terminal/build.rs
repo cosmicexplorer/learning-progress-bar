@@ -24,28 +24,26 @@
 #![allow(clippy::new_without_default, clippy::new_ret_no_self)]
 // Arc<Mutex> can be more clear than needing to grok Orderings:
 #![allow(clippy::mutex_atomic)]
-// We only use unsafe pointer derefrences in our no_mangle exposed API, but it is nicer to list
-// just the one minor call as unsafe, than to mark the whole function as unsafe which may hide
-// other unsafeness.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-#[cfg(not(feature = "pants-injected"))]
-compile_error!("This crate currently requires the \"pants-injected\" feature to be activated!");
+use cffi_compat::*;
 
-#[cfg(feature = "pants-injected")]
-pub mod streaming_interface;
+use std::{env, fs, path::PathBuf};
 
-/* #[cfg(feature = "pants-injected")] */
-/* use thrift_ffi::*; */
+fn main() -> Result<(), BindingsCreationError> {
+  let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
 
-/* #[no_mangle] */
-/* pub extern "C" fn () { */
-/* } */
+  #[cfg(feature = "cffi_compatible")]
+  let env = Environment::CffiCompatible;
+  #[cfg(not(feature = "cffi_compatible"))]
+  let env = Environment::Normal;
 
-#[cfg(test)]
-mod tests {
-  #[test]
-  fn it_works() {
-    assert_eq!(2 + 2, 4);
-  }
+  #[cfg(feature = "pants-injected")]
+  fs::copy("streaming_interface.rs", "src/streaming_interface.rs")?;
+
+  generate(GenerateBindingsRequest {
+    crate_dir: PathBuf::from(crate_dir),
+    bindings_file: PathBuf::from("src/terminal_wrapper_bindings.h"),
+    config_file: PathBuf::from("cbindgen.toml"),
+    env,
+  })
 }

@@ -1,9 +1,12 @@
 cargo_subproject(
   name='terminal-rust',
+  generated_resources=[
+    'src/terminal_wrapper_bindings.h',
+    'thrift_ffi/thrift_ffi_bindings.h',
+  ],
+  features=['cffi_compatible'],
   cargo_output_file='libterminal_wrapper.dylib',
   sources=rglobs('*'),
-  # sources=rglobs('*.toml', '*.rs',
-  #                exclude=[zglobs('target/**/*')]),
   cargo_subprojects=[
     'thrift_ffi',
   ],
@@ -20,7 +23,8 @@ python_library(
     '3rdparty/python:pants',
     '3rdparty/python:thrift',
     '3rdparty/python:setuptools-floating',
-    'thrift_ffi',
+    ':terminal-rust',
+    'terminal/thrift:python',
   ],
 )
 

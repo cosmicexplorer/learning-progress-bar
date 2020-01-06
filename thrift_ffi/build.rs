@@ -25,56 +25,22 @@
 // Arc<Mutex> can be more clear than needing to grok Orderings:
 #![allow(clippy::mutex_atomic)]
 
-use std::{env, io};
+use cffi_compat::*;
 
-use cbindgen;
-
-#[derive(Debug)]
-enum BindingsCreationError {
-  IoError(io::Error),
-  EnvError(env::VarError),
-  CbindgenError(cbindgen::Error),
-  StrError(String),
-}
-
-impl From<env::VarError> for BindingsCreationError {
-  fn from(err: env::VarError) -> Self { BindingsCreationError::EnvError(err) }
-}
-
-impl From<io::Error> for BindingsCreationError {
-  fn from(err: io::Error) -> Self { BindingsCreationError::IoError(err) }
-}
-
-impl From<cbindgen::Error> for BindingsCreationError {
-  fn from(err: cbindgen::Error) -> Self { BindingsCreationError::CbindgenError(err) }
-}
-
-impl From<String> for BindingsCreationError {
-  fn from(err: String) -> Self { Self::StrError(err) }
-}
-
-#[cfg(feature = "without-preprocessor-directives")]
-fn build_cbindgen(crate_dir: &str) -> Result<cbindgen::Builder, BindingsCreationError> {
-  let builder = cbindgen::Builder::new()
-    .with_crate(crate_dir)
-    .with_config(cbindgen::Config::from_file("cbindgen.toml")?)
-    .with_no_includes();
-  Ok(builder)
-}
-
-#[cfg(not(feature = "without-preprocessor-directives"))]
-fn build_cbindgen(crate_dir: &str) -> Result<cbindgen::Builder, BindingsCreationError> {
-  let builder = cbindgen::Builder::new()
-    .with_crate(crate_dir)
-    .with_config(cbindgen::Config::from_file("cbindgen.toml")?)
-    .with_include_guard("__THRIFT_FFI_CBINDGEN_H__");
-  Ok(builder)
-}
+use std::{env, path::PathBuf};
 
 fn main() -> Result<(), BindingsCreationError> {
-  let crate_dir = std::env::var("CARGO_MANIFEST_DIR")?;
-  build_cbindgen(&crate_dir)?
-    .generate()?
-    .write_to_file("src/thrift_ffi_bindings.h");
-  Ok(())
+  let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
+
+  #[cfg(feature = "cffi_compatible")]
+  let env = Environment::CffiCompatible;
+  #[cfg(not(feature = "cffi_compatible"))]
+  let env = Environment::Normal;
+
+  generate(GenerateBindingsRequest {
+    crate_dir: PathBuf::from(crate_dir),
+    bindings_file: PathBuf::from("thrift_ffi_bindings.h"),
+    config_file: PathBuf::from("cbindgen.toml"),
+    env,
+  })
 }

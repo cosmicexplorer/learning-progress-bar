@@ -1,17 +1,21 @@
 import os
 import re
 from dataclasses import dataclass
+from enum import Enum
 
+from pants.backend.codegen.thrift.python.python_thrift_library import PythonThriftLibrary
+from pants.backend.python.rules.pex_from_target_closure import PythonResources, PythonResourceTarget
 from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import BuildFileAddresses
 from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
 from pants.engine.isolated_process import ExecuteProcessRequest, ExecuteProcessResult
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargets, TransitiveHydratedTargets
-from pants.engine.legacy.structs import CargoTargetAdaptor, TargetAdaptor
+from pants.engine.legacy.structs import CargoTargetAdaptor, TargetAdaptor, PythonThriftLibraryAdaptor
 from pants.engine.objects import Collection
-from pants.engine.rules import RootRule, rule
+from pants.engine.rules import RootRule, UnionRule, rule
 from pants.engine.selectors import Get, MultiGet
 from pants.rules.core.strip_source_root import SourceRootStrippedSources
+from pants.util.enums import match
 from upstreamable.targets.rust_thrift_library import RustThriftLibrary
 
 
@@ -36,15 +40,50 @@ def filter_rust_thrift_targets(hts: HydratedTargets) -> ManyRustThriftLibraryAda
 
 
 @dataclass(frozen=True)
-class RustThriftBuildResult:
-  snapshot: Snapshot
+class PythonThriftLibraryWrapper:
+  underlying: TargetAdaptor
+
+
+class ManyPythonThriftLibraryAdaptors(Collection[PythonThriftLibraryWrapper]):
+  pass
 
 
 @rule
-async def execute_rust_thrift(
-  rust_thrift_target: RustThriftLibraryWrapper,
-) -> RustThriftBuildResult:
-  buildable_target = rust_thrift_target.underlying
+def filter_python_thrift_targets(hts: HydratedTargets) -> ManyPythonThriftLibraryAdaptors:
+  return ManyPythonThriftLibraryAdaptors(
+    tuple(
+      PythonThriftLibraryWrapper(ht.adaptor)
+      for ht in hts
+      if ht.adaptor.type_alias == PythonThriftLibrary.alias()
+    )
+  )
+
+
+@dataclass(frozen=True)
+class ThriftBuildResult:
+  snapshot: Snapshot
+
+
+class ThriftLanguage(Enum):
+  rust = 'rust'
+  python = 'python'
+
+
+@dataclass(frozen=True)
+class ThriftRequest:
+  target: TargetAdaptor
+  language: ThriftLanguage
+
+
+def _strip_thrift_file_ext(filename: str) -> str:
+  return re.sub(r'\.thrift$', '', filename)
+
+
+@rule
+async def execute_thrift(
+  request: ThriftRequest
+) -> ThriftBuildResult:
+  buildable_target = request.target
   thts = await Get[TransitiveHydratedTargets](
     BuildFileAddresses((buildable_target.address,) + tuple(buildable_target.dependencies))
   )
@@ -57,33 +96,69 @@ async def execute_rust_thrift(
 
   all_input_file_paths = (await Get[Snapshot](Digest, merged_stripped_sources)).files
   cur_target_sources = [f for f in all_input_file_paths if f.endswith('.thrift')]
-  expected_output_files = [re.sub(r'\.thrift$', '.rs', f) for f in cur_target_sources]
+
+  # Get the expected output files or directories, depending on language.
+  if request.language == ThriftLanguage.rust:
+    outputs = dict(output_files=tuple(f'{_strip_thrift_file_ext(f)}.rs'
+                                      for f in cur_target_sources))
+  else:
+    assert request.language == ThriftLanguage.python
+    outputs = dict(output_directories=('gen-py',))
+
+  # Execute thrift.
   exe_res = await Get[ExecuteProcessResult](
     ExecuteProcessRequest(
-      argv=('thrift', '--gen', 'rs', '-o', '.', *cur_target_sources),
+      argv=('thrift',
+            '--gen', match(request.language, {
+              ThriftLanguage.rust: 'rs',
+              ThriftLanguage.python: 'py',
+            }),
+            '-o', '.',
+            *cur_target_sources),
       input_files=merged_stripped_sources,
-      description=f'invoke thrift rust for target {buildable_target.address}!',
+      description=f'invoke thrift {request.language} for target {buildable_target.address}!',
       env={'PATH': os.environ['PATH']},
-      output_files=tuple(expected_output_files),
+      **outputs,
     )
   )
   snapshot = await Get[Snapshot](Digest, exe_res.output_directory_digest)
-  return RustThriftBuildResult(snapshot)
+  return ThriftBuildResult(snapshot)
+
+
+@dataclass(frozen=True)
+class ThriftTargetRequest:
+  target: TargetAdaptor
+  language: ThriftLanguage
 
 
 @rule
-async def get_rust_thrift_for_subproject(cargo_target: CargoTargetAdaptor) -> RustThriftBuildResult:
+async def get_thrift_for_subproject(request: ThriftTargetRequest) -> ThriftBuildResult:
+  thriftable_target = request.target
+
+  # Get all dependencies that are also thrift library targets to put them in the same chroot when
+  # executing thrift.
   cur_target_bfa = BuildFileAddress(
     build_file=None,
-    target_name=cargo_target.address.target_name,
-    rel_path=os.path.join(cargo_target.address.spec_path, 'BUILD'),
+    target_name=thriftable_target.address.target_name,
+    rel_path=os.path.join(thriftable_target.address.spec_path, 'BUILD'),
   )
   thts = await Get[TransitiveHydratedTargets](BuildFileAddresses((cur_target_bfa,)))
-  rust_thrift_targets = await Get[ManyRustThriftLibraryAdaptors](
-    HydratedTargets(tuple(thts.closure))
-  )
+
+  if request.language == ThriftLanguage.rust:
+    thrift_targets = await Get[ManyRustThriftLibraryAdaptors](
+      HydratedTargets(tuple(thts.closure))
+    )
+  else:
+    assert request.language == ThriftLanguage.python
+    thrift_targets = await Get[ManyPythonThriftLibraryAdaptors](
+      HydratedTargets(tuple(thts.closure))
+    )
+
   results = await MultiGet(
-    Get[RustThriftBuildResult](RustThriftLibraryWrapper, t) for t in rust_thrift_targets
+    Get[ThriftBuildResult](ThriftRequest(
+      target=t.underlying,
+      language=request.language,
+    )) for t in thrift_targets
   )
   merged_digest = await Get[Digest](
     DirectoriesToMerge(tuple(r.snapshot.directory_digest for r in results))
@@ -91,13 +166,27 @@ async def get_rust_thrift_for_subproject(cargo_target: CargoTargetAdaptor) -> Ru
 
   merged_files = [f for r in results for f in r.snapshot.files]
 
-  return RustThriftBuildResult(Snapshot(merged_digest, files=tuple(merged_files), dirs=()))
+  return ThriftBuildResult(Snapshot(merged_digest, files=tuple(merged_files), dirs=()))
+
+
+@rule
+async def collect_python_thrift(python_target: PythonThriftLibraryAdaptor) -> PythonResources:
+  res = await Get[ThriftBuildResult](ThriftTargetRequest(
+    target=python_target,
+    language=ThriftLanguage.python,
+  ))
+  return PythonResources(res.snapshot)
 
 
 def rules():
   return [
     filter_rust_thrift_targets,
-    RootRule(RustThriftLibraryWrapper),
-    execute_rust_thrift,
-    get_rust_thrift_for_subproject,
+    filter_python_thrift_targets,
+    RootRule(ThriftRequest),
+    RootRule(ThriftTargetRequest),
+    execute_thrift,
+    get_thrift_for_subproject,
+    UnionRule(PythonResourceTarget, PythonThriftLibraryAdaptor),
+    RootRule(PythonThriftLibraryAdaptor),
+    collect_python_thrift,
   ]

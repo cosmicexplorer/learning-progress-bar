@@ -30,7 +30,6 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod interning;
-
 use interning::*;
 
 use lazy_static::lazy_static;
@@ -41,15 +40,13 @@ use thrift::{
 };
 
 use std::{
-  ffi::CStr,
   fmt,
   io::{Read, Write},
-  os::raw,
   sync::Arc,
 };
 
 lazy_static! {
-  static ref THRIFT_BUFFER_MAPPING: Arc<Mutex<Interns<BidiThriftClient>>> =
+  static ref THRIFT_BUFFER_MAPPING: Arc<Mutex<Interns<InMemoryThriftClient>>> =
     Arc::new(Mutex::new(Interns::new()));
 }
 
@@ -64,10 +61,10 @@ impl fmt::Debug for InMemoryThriftClient {
   }
 }
 
-#[derive(Clone, Debug)]
-struct BidiThriftClient {
-  pub ffi_language_writable: Arc<Mutex<InMemoryThriftClient>>,
-  pub rust_writable: Arc<Mutex<InMemoryThriftClient>>,
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub enum ClientRequest {
+  Monocast(usize),
 }
 
 #[repr(C)]
@@ -77,7 +74,7 @@ pub struct ThriftBufferHandle {
 }
 
 impl ThriftBufferHandle {
-  fn create_single_thrift_channel(
+  fn create_single_thrift_client(
     capacity: usize,
   ) -> Result<InMemoryThriftClient, ThriftStreamCreationError> {
     let channel = TBufferChannel::with_capacity(capacity, capacity);
@@ -88,21 +85,22 @@ impl ThriftBufferHandle {
     })
   }
 
-  fn create_bidi_ffi_client(capacity: usize) -> Result<Self, ThriftStreamCreationError> {
-    let ffi_language_writable = Arc::new(Mutex::new(Self::create_single_thrift_channel(capacity)?));
-    let rust_writable = Arc::new(Mutex::new(Self::create_single_thrift_channel(capacity)?));
-    let client = BidiThriftClient {
-      ffi_language_writable,
-      rust_writable,
-    };
+  fn intern_new_ffi_client(capacity: usize) -> Result<Self, ThriftStreamCreationError> {
+    let client = Self::create_single_thrift_client(capacity)?;
     let key = (*THRIFT_BUFFER_MAPPING).lock().intern(client)?;
     Ok(ThriftBufferHandle { key })
   }
 
-  fn get_thrift_client(self) -> Result<BidiThriftClient, ThriftStreamCreationError> {
+  fn get_thrift_client(
+    self,
+  ) -> Result<Arc<Mutex<InMemoryThriftClient>>, ThriftStreamCreationError> {
     let interns = (*THRIFT_BUFFER_MAPPING).lock();
-    let ret = interns.get(self.key)?;
-    Ok(ret.clone())
+    Ok(interns.get(self.key)?)
+  }
+
+  fn gc(self) -> UninternResult {
+    let mut interns = (*THRIFT_BUFFER_MAPPING).lock();
+    interns.garbage_collect(self.key)
   }
 }
 
@@ -115,16 +113,41 @@ impl From<thrift::Error> for ThriftStreamCreationError {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub enum ThriftFFIClientCreationResult {
+pub enum ClientCreationResult {
   Created(ThriftBufferHandle),
   Failed,
 }
 
 #[no_mangle]
-pub extern "C" fn make_buffer_handle(capacity: usize) -> ThriftFFIClientCreationResult {
-  match ThriftBufferHandle::create_bidi_ffi_client(capacity) {
-    Ok(client) => ThriftFFIClientCreationResult::Created(client),
-    Err(_) => ThriftFFIClientCreationResult::Failed,
+pub extern "C" fn create_thrift_ffi_client(
+  request: *const ClientRequest,
+  result: *mut ClientCreationResult,
+)
+{
+  let ret = match unsafe { *request } {
+    ClientRequest::Monocast(capacity) => {
+      match ThriftBufferHandle::intern_new_ffi_client(capacity) {
+        Ok(client) => ClientCreationResult::Created(client),
+        Err(_) => ClientCreationResult::Failed,
+      }
+    },
+  };
+  unsafe {
+    *result = ret;
+  }
+}
+
+#[repr(C)]
+pub enum ClientDestructionResult {
+  SuccessfullyFreed,
+  DoubleFreed,
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_thrift_ffi_client(handle: ThriftBufferHandle) -> ClientDestructionResult {
+  match handle.gc() {
+    UninternResult::SuccessfullyUninterned => ClientDestructionResult::SuccessfullyFreed,
+    UninternResult::DoubleFreed => ClientDestructionResult::DoubleFreed,
   }
 }
 
@@ -147,23 +170,30 @@ pub enum ThriftWriteResult {
 pub extern "C" fn write_buffer_handle(
   handle: ThriftBufferHandle,
   chunk: ThriftChunk,
-) -> ThriftWriteResult
+  result: *mut ThriftWriteResult,
+)
 {
   let client = if let Ok(client) = handle.get_thrift_client() {
     client
   } else {
-    return ThriftWriteResult::Failed;
+    unsafe {
+      *result = ThriftWriteResult::Failed;
+    }
+    return;
   };
 
-  let mut channel = (*client.ffi_language_writable).lock();
+  let mut channel = (*client).lock();
   let byte_slice = unsafe {
     let ThriftChunk { ptr, len, .. } = chunk;
     std::slice::from_raw_parts(ptr, len as usize)
   };
 
-  match channel.writeable.write(byte_slice) {
+  let ret = match channel.writeable.write(byte_slice) {
     Ok(len) => ThriftWriteResult::Written(len as u64),
     Err(_) => ThriftWriteResult::Failed,
+  };
+  unsafe {
+    *result = ret;
   }
 }
 
@@ -178,35 +208,34 @@ pub enum ThriftReadResult {
 pub extern "C" fn read_buffer_handle(
   handle: ThriftBufferHandle,
   mut chunk: ThriftChunk,
-) -> ThriftReadResult
+  result: *mut ThriftReadResult,
+)
 {
   let client = if let Ok(client) = handle.get_thrift_client() {
     client
   } else {
-    return ThriftReadResult::Failed;
+    unsafe {
+      *result = ThriftReadResult::Failed;
+    }
+    return;
   };
 
-  let mut channel = (*client.ffi_language_writable).lock();
+  let mut channel = (*client).lock();
   let byte_slice = unsafe {
     let ThriftChunk { ptr, len, .. } = chunk;
     std::slice::from_raw_parts_mut(ptr, len as usize)
   };
 
-  match channel.readable.read(byte_slice) {
+  let ret = match channel.readable.read(byte_slice) {
     Ok(len) => {
       chunk.len = len as u64;
       ThriftReadResult::Read(chunk)
     },
     Err(_) => ThriftReadResult::Failed,
+  };
+  unsafe {
+    *result = ret;
   }
-}
-
-#[no_mangle]
-pub extern "C" fn test_str_fn(
-  s: *const raw::c_char,
-) -> u64 {
-  let msg_str = unsafe { CStr::from_ptr(s).to_string_lossy() };
-  msg_str.len() as u64
 }
 
 #[cfg(test)]
