@@ -13,6 +13,7 @@ cffi_compatible = ["thrift_ffi/cffi_compatible"]
 pants-injected = ["thrift_ffi", "cffi_compat"]
 
 [dependencies]
+regex = "1"
 thrift = "0.13.0"
 thrift_ffi = { path = "thrift_ffi", optional = true }
 

@@ -28,7 +28,7 @@ from pants.engine.legacy.graph import HydratedTarget, HydratedTargets, Transitiv
 from pants.engine.legacy.structs import CargoTargetAdaptor
 from pants.engine.objects import Collection
 from pants.engine.parser import SymbolTable
-from pants.engine.rules import RootRule, UnionRule, console_rule, optionable_rule, rule
+from pants.engine.rules import RootRule, UnionRule, console_rule, subsystem_rule, rule
 from pants.engine.selectors import Get, MultiGet
 from pants.rules.core.core_test_model import Status, TestResult, TestTarget
 from pants.rules.core.strip_source_root import SourceRootStrippedSources
@@ -286,7 +286,7 @@ async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) 
 
 def rules():
   return [
-    optionable_rule(Cargo.Factory),
+    subsystem_rule(Cargo.Factory),
     make_cargo,
     RootRule(CargoTargetAdaptor),
     UnionRule(PythonResourceTarget, CargoTargetAdaptor),

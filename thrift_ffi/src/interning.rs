@@ -15,8 +15,6 @@ impl From<InternError> for ThriftStreamCreationError {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct InternKey(u64);
 
-/* Eq, PartialEq, Hash */
-
 pub struct Interns<T> {
   mapping: HashMap<InternKey, Arc<Mutex<T>>>,
   idx: u64,
@@ -39,11 +37,6 @@ impl<T> Interns<T> {
   }
 }
 
-pub enum UninternResult {
-  SuccessfullyUninterned,
-  DoubleFreed,
-}
-
 impl<T: Debug> Interns<T> {
   pub fn intern(&mut self, value: T) -> Result<InternKey, InternError> {
     let key = {
@@ -62,11 +55,14 @@ impl<T: Debug> Interns<T> {
     }
   }
 
-  pub fn garbage_collect(&mut self, key: InternKey) -> UninternResult {
+  pub fn garbage_collect(&mut self, key: InternKey) -> Result<(), InternError> {
     if self.mapping.remove(&key).is_some() {
-      UninternResult::SuccessfullyUninterned
+      Ok(())
     } else {
-      UninternResult::DoubleFreed
+      Err(InternError(format!(
+        "key {:?} did not exist in the mapping when garbage collection was attempted!",
+        key
+      )))
     }
   }
 }

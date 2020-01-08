@@ -7,7 +7,7 @@ from pants.backend.codegen.thrift.python.python_thrift_library import PythonThri
 from pants.backend.python.rules.pex_from_target_closure import PythonResources, PythonResourceTarget
 from pants.build_graph.address import Address, BuildFileAddress
 from pants.engine.addressable import BuildFileAddresses
-from pants.engine.fs import Digest, DirectoriesToMerge, Snapshot
+from pants.engine.fs import Digest, DirectoriesToMerge, DirectoryWithPrefixToStrip, Snapshot
 from pants.engine.isolated_process import ExecuteProcessRequest, ExecuteProcessResult
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargets, TransitiveHydratedTargets
 from pants.engine.legacy.structs import CargoTargetAdaptor, TargetAdaptor, PythonThriftLibraryAdaptor
@@ -175,7 +175,11 @@ async def collect_python_thrift(python_target: PythonThriftLibraryAdaptor) -> Py
     target=python_target,
     language=ThriftLanguage.python,
   ))
-  return PythonResources(res.snapshot)
+  stripped = await Get[Snapshot](DirectoryWithPrefixToStrip(
+    directory_digest=res.snapshot.directory_digest,
+    prefix='gen-py',
+  ))
+  return PythonResources(stripped)
 
 
 def rules():

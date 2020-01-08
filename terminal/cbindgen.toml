@@ -5,3 +5,6 @@ language = "C"
 [parse]
 parse_deps = true
 include = ["thrift_ffi"]
+
+[export]
+exclude = ["InternKey", "ThriftBufferHandle", "ThriftChunk"]
