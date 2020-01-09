@@ -1,19 +1,35 @@
-use super::ThriftStreamCreationError;
-
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InternError(String);
 
-impl From<InternError> for ThriftStreamCreationError {
-  fn from(e: InternError) -> Self { ThriftStreamCreationError(format!("{:?}", e)) }
-}
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct InternKey(u64);
+
+pub trait Interned<T> {
+  fn as_key(&self) -> InternKey;
+  fn from_key(key: InternKey) -> Self;
+  fn interns() -> Arc<RwLock<Interns<T>>>;
+
+  fn dereference(&self) -> Result<Arc<Mutex<T>>, InternError> {
+    Ok(Self::interns().read().get(self.as_key())?)
+  }
+
+  fn garbage_collect(&mut self) -> Result<(), InternError> {
+    Ok(Self::interns().write().garbage_collect(self.as_key())?)
+  }
+}
+
+/* NB: The `: Sized` is needed so we can return `Self` in `::intern()`! */
+pub trait Handle<T>: Interned<T>+Sized {
+  fn intern(value: T) -> Result<Self, InternError> {
+    let key = Self::interns().write().intern(value)?;
+    Ok(Self::from_key(key))
+  }
+}
 
 pub struct Interns<T> {
   mapping: HashMap<InternKey, Arc<Mutex<T>>>,
@@ -28,16 +44,6 @@ impl<T> Interns<T> {
     }
   }
 
-  pub fn get(&self, key: InternKey) -> Result<Arc<Mutex<T>>, InternError> {
-    self
-      .mapping
-      .get(&key)
-      .map(|val| Arc::clone(val))
-      .ok_or_else(|| InternError(format!("could not find interned key {:?}", key)))
-  }
-}
-
-impl<T: Debug> Interns<T> {
   pub fn intern(&mut self, value: T) -> Result<InternKey, InternError> {
     let key = {
       let idx = self.idx;
@@ -45,14 +51,22 @@ impl<T: Debug> Interns<T> {
       InternKey(idx)
     };
     let wrapped = Arc::new(Mutex::new(value));
-    if let Some(previous_value) = self.mapping.insert(key, wrapped) {
+    if self.mapping.insert(key, wrapped).is_some() {
       Err(InternError(format!(
-        "key {:?} should not exist already, but did! previous value: {:?}",
-        key, previous_value
+        "key {:?} should not exist already, but did!",
+        key
       )))
     } else {
       Ok(key)
     }
+  }
+
+  pub fn get(&self, key: InternKey) -> Result<Arc<Mutex<T>>, InternError> {
+    self
+      .mapping
+      .get(&key)
+      .map(|val| Arc::clone(val))
+      .ok_or_else(|| InternError(format!("could not find interned key {:?}", key)))
   }
 
   pub fn garbage_collect(&mut self, key: InternKey) -> Result<(), InternError> {
@@ -65,4 +79,33 @@ impl<T: Debug> Interns<T> {
       )))
     }
   }
+}
+
+#[macro_export]
+macro_rules! new_handle {
+  ($name:ident => $interns_name:ident : Arc < RwLock < Interns < $into:ty >> >) => {
+    #[repr(C)]
+    #[derive(Debug)]
+    pub struct $name {
+      key: InternKey,
+    }
+
+    lazy_static! {
+      static ref $interns_name: Arc<RwLock<Interns<$into>>> = Arc::new(RwLock::new(Interns::new()));
+    }
+
+    impl Interned<$into> for $name {
+      fn as_key(&self) -> InternKey { self.key }
+
+      fn from_key(key: InternKey) -> Self { $name { key } }
+
+      fn interns() -> Arc<RwLock<Interns<$into>>> { Arc::clone(&$interns_name) }
+    }
+
+    impl Handle<$into> for $name {}
+
+    impl Drop for $name {
+      fn drop(&mut self) { self.garbage_collect().unwrap(); }
+    }
+  };
 }

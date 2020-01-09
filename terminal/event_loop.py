@@ -4,13 +4,19 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, AsyncGenerator, Optional, Union, cast
 
-import src
-import thrift_ffi
-import target.debug
 from cffi import FFI
 from pants.util.contextutil import temporary_file
 from pkg_resources import DefaultProvider, ZipProvider, get_provider
+from thrift.protocol.TBinaryProtocol import TBinaryProtocol
 from thrift.transport.TTransport import TTransportBase
+
+import src
+import thrift_ffi
+import target.debug
+
+from terminal.streaming_interface.TerminalWrapper import TerminalWrapper
+from terminal.streaming_interface.constants import *
+from terminal.streaming_interface.ttypes import *
 
 
 def get_resource_string(module: ModuleType, rel_path: Path) -> bytes:
@@ -172,33 +178,38 @@ class FFIMonocastTransport(TTransportBase):
 
 def main() -> None:
   print('hello!')
-  message = 'hello2!'.encode()
+
   ffi, lib = bootstrap_thrift_ffi()
-  with ffi.new('ClientRequest*') as request,\
-       ffi.new('MonocastClient*') as monocast,\
-       ffi.new('ClientCreationResult*') as result:
-    request.tag = lib.Monocast
-    monocast = dict(
-      read_capacity=300,
-      write_capacity=300,
-    )
-    request.monocast = (monocast,)
-    lib.create_thrift_ffi_client(request, result)
-    assert result.tag == lib.Created
-    thrift_buffer_handle = result.created.tup_0
-  print(f'thrift_buffer_handle = {thrift_buffer_handle}')
 
-  with ffi.new('char[]', len(message)) as buf,\
-       ffi.new('ThriftChunk*') as chunk:
-    buf[0:len(message)] = message
-    chunk.ptr = buf
-    chunk.len = len(message)
-    chunk.capacity = len(message)
-    response = lib.write_then_read(thrift_buffer_handle, chunk)
-    assert response == lib.Success
-    expected_response = 'hallo2!'.encode()
-    assert chunk.len == len(expected_response)
-    # assert chunk.capacity == len(expected_response)
-    assert ffi.buffer(chunk.ptr, chunk.len) == expected_response
+  transport = FFIMonocastTransport(ffi, lib, 300, 300)
+  protocol = TBinaryProtocol(transport)
+  client = TerminalWrapper.Client(protocol)
 
-  lib.destroy_thrift_ffi_client(thrift_buffer_handle)
+  # with ffi.new('ClientRequest*') as request,\
+  #      ffi.new('MonocastClient*') as monocast,\
+  #      ffi.new('ClientCreationResult*') as result:
+  #   request.tag = lib.Monocast
+  #   monocast = dict(
+  #     read_capacity=300,
+  #     write_capacity=300,
+  #   )
+  #   request.monocast = (monocast,)
+  #   lib.create_thrift_ffi_client(request, result)
+  #   assert result.tag == lib.Created
+  #   thrift_buffer_handle = result.created.tup_0
+  # print(f'thrift_buffer_handle = {thrift_buffer_handle}')
+
+  # with ffi.new('char[]', len(message)) as buf,\
+  #      ffi.new('ThriftChunk*') as chunk:
+  #   buf[0:len(message)] = message
+  #   chunk.ptr = buf
+  #   chunk.len = len(message)
+  #   chunk.capacity = len(message)
+  #   response = lib.write_then_read(thrift_buffer_handle, chunk)
+  #   assert response == lib.Success
+  #   expected_response = 'hallo2!'.encode()
+  #   assert chunk.len == len(expected_response)
+  #   # assert chunk.capacity == len(expected_response)
+  #   assert ffi.buffer(chunk.ptr, chunk.len) == expected_response
+
+  # lib.destroy_thrift_ffi_client(thrift_buffer_handle)

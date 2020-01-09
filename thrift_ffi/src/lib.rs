@@ -1,3 +1,4 @@
+#![feature(associated_type_defaults)]
 #![deny(warnings)]
 // Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be
 // copied and pasted across crates, but there doesn't appear to be a way to include inner attributes
@@ -24,17 +25,16 @@
 #![allow(clippy::new_without_default, clippy::new_ret_no_self)]
 // Arc<Mutex> can be more clear than needing to grok Orderings:
 #![allow(clippy::mutex_atomic)]
-// We only use unsafe pointer derefrences in our no_mangle exposed API, but it is nicer to list
+// We only use unsafe pointer dereference in our no_mangle exposed API, but it is nicer to list
 // just the one minor call as unsafe, than to mark the whole function as unsafe which may hide
 // other unsafeness.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-mod interning;
-pub use interning::InternKey;
-use interning::Interns;
+pub mod interning;
+use interning::*;
 
 use lazy_static::lazy_static;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use thrift::{self, transport::TBufferChannel};
 
 use std::{
@@ -44,19 +44,19 @@ use std::{
   sync::Arc,
 };
 
-lazy_static! {
-  static ref THRIFT_BUFFER_MAPPING: Arc<Mutex<Interns<InMemoryThriftClient>>> =
-    Arc::new(Mutex::new(Interns::new()));
+pub struct UserClient {
+  channel: TBufferChannel,
 }
 
-pub struct InMemoryThriftClient {
-  pub channel: TBufferChannel,
-}
-
-impl fmt::Debug for InMemoryThriftClient {
+impl fmt::Debug for UserClient {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-    write!(f, "InMemoryThriftClient(...)")
+    write!(f, "User(...)")
   }
+}
+
+#[derive(Debug)]
+pub struct Topic {
+  users: Vec<UserClient>,
 }
 
 #[repr(C)]
@@ -72,66 +72,36 @@ pub enum ClientRequest {
   Monocast(MonocastClient),
 }
 
-#[repr(C)]
-#[derive(Debug)]
-pub struct ThriftBufferHandle {
-  key: InternKey,
-  tombstone: bool,
-}
-
-impl Drop for ThriftBufferHandle {
-  fn drop(&mut self) { self.gc().unwrap(); }
-}
+new_handle![ThriftBufferHandle => THRIFT_BUFFER_MAPPING: Arc<RwLock<Interns<UserClient>>>];
 
 impl ThriftBufferHandle {
-  fn create_single_thrift_client(
-    request: MonocastClient,
-  ) -> Result<InMemoryThriftClient, ThriftStreamCreationError> {
-    let MonocastClient {
-      read_capacity,
-      write_capacity,
-    } = request;
-    let channel = TBufferChannel::with_capacity(read_capacity as usize, write_capacity as usize);
-    Ok(InMemoryThriftClient { channel })
-  }
-
-  fn intern_new_ffi_client(request: MonocastClient) -> Result<Self, ThriftStreamCreationError> {
-    let client = Self::create_single_thrift_client(request)?;
-    let key = (*THRIFT_BUFFER_MAPPING).lock().intern(client)?;
-    Ok(ThriftBufferHandle {
-      key,
-      tombstone: false,
-    })
-  }
-
-  fn get_thrift_client(
-    &self,
-  ) -> Result<Arc<Mutex<InMemoryThriftClient>>, ThriftStreamCreationError> {
-    let interns = (*THRIFT_BUFFER_MAPPING).lock();
-    Ok(interns.get(self.key)?)
-  }
-
-  fn gc(&mut self) -> Result<(), ThriftStreamCreationError> {
-    if self.tombstone {
-      Ok(())
-    } else {
-      let mut interns = (*THRIFT_BUFFER_MAPPING).lock();
-      interns.garbage_collect(self.key)?;
-      self.tombstone = true;
-      Ok(())
-    }
+  fn create_single_buffer_channel(
+    read_capacity: usize,
+    write_capacity: usize,
+  ) -> UserClient
+  {
+    let channel = TBufferChannel::with_capacity(read_capacity, write_capacity);
+    UserClient { channel }
   }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ThriftStreamCreationError(String);
+pub struct ThriftTransportCreationError(String);
 
-impl From<thrift::Error> for ThriftStreamCreationError {
-  fn from(e: thrift::Error) -> Self { ThriftStreamCreationError(format!("{:?}", e)) }
+impl From<InternError> for ThriftTransportCreationError {
+  fn from(e: InternError) -> Self { ThriftTransportCreationError(format!("{:?}", e)) }
+}
+
+impl From<thrift::Error> for ThriftTransportCreationError {
+  fn from(e: thrift::Error) -> Self { ThriftTransportCreationError(format!("{:?}", e)) }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ThriftFFIError(String);
+
+impl From<InternError> for ThriftFFIError {
+  fn from(e: InternError) -> Self { ThriftFFIError(format!("{:?}", e)) }
+}
 
 impl From<String> for ThriftFFIError {
   fn from(e: String) -> Self { ThriftFFIError(e) }
@@ -141,8 +111,8 @@ impl From<io::Error> for ThriftFFIError {
   fn from(e: io::Error) -> Self { ThriftFFIError(format!("{:?}", e)) }
 }
 
-impl From<ThriftStreamCreationError> for ThriftFFIError {
-  fn from(e: ThriftStreamCreationError) -> Self { ThriftFFIError(format!("{:?}", e)) }
+impl From<ThriftTransportCreationError> for ThriftFFIError {
+  fn from(e: ThriftTransportCreationError) -> Self { ThriftFFIError(format!("{:?}", e)) }
 }
 
 #[repr(C)]
@@ -154,11 +124,17 @@ pub enum ClientCreationResult {
 
 pub fn create_client(
   request: ClientRequest,
-) -> Result<ThriftBufferHandle, ThriftStreamCreationError> {
+) -> Result<ThriftBufferHandle, ThriftTransportCreationError> {
   let handle = match request {
-    ClientRequest::Monocast(request) => ThriftBufferHandle::intern_new_ffi_client(request)?,
+    ClientRequest::Monocast(MonocastClient {
+      read_capacity,
+      write_capacity,
+    }) => ThriftBufferHandle::create_single_buffer_channel(
+      read_capacity as usize,
+      write_capacity as usize,
+    ),
   };
-  Ok(handle)
+  Ok(ThriftBufferHandle::intern(handle)?)
 }
 
 #[no_mangle]
@@ -214,11 +190,11 @@ pub fn write_buffer(
     assert!(len <= capacity);
     std::slice::from_raw_parts(*ptr, *len as usize)
   };
-  let client_ref = handle.get_thrift_client()?;
   let written = {
-    let mut client = (*client_ref).lock();
-    let InMemoryThriftClient { ref mut channel } = *client;
-    (*channel).write(byte_slice)?
+    let client_ref = handle.dereference()?;
+    let mut client = client_ref.lock();
+    let UserClient { ref mut channel } = *client;
+    channel.write(byte_slice)?
   };
   assert!(written <= chunk.len as usize);
   Ok(written)
@@ -257,10 +233,10 @@ pub fn read_buffer(
     assert!(len <= capacity);
     std::slice::from_raw_parts_mut(*ptr, *len as usize)
   };
-  let client_ref = handle.get_thrift_client()?;
   let read = {
-    let mut client = (*client_ref).lock();
-    let InMemoryThriftClient { ref mut channel } = *client;
+    let client_ref = handle.dereference()?;
+    let mut client = client_ref.lock();
+    let UserClient { ref mut channel } = *client;
     channel.read(byte_slice)?
   };
   assert!(read <= chunk.capacity as usize);
@@ -312,9 +288,9 @@ mod tests {
     /* Copy written bytes to the read buffer so we can be sure to read the exact
      * same bytes back out again. */
     {
-      let client_ref = handle.get_thrift_client()?;
-      let mut client = (*client_ref).lock();
-      let InMemoryThriftClient { ref mut channel } = *client;
+      let client_ref = handle.dereference()?;
+      let mut client = client_ref.lock();
+      let UserClient { ref mut channel } = *client;
       channel.copy_write_buffer_to_read_buffer();
     }
 

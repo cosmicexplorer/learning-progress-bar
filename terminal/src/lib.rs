@@ -33,53 +33,66 @@
 compile_error!("This crate currently requires the \"pants-injected\" feature to be activated!");
 
 pub mod streaming_interface;
-
-use thrift_ffi::{self, ThriftBufferHandle, ThriftChunk};
+use streaming_interface::*;
 
 use regex::Regex;
+use thrift::transport::{
+  TInputProtocolFactory, TOutputProtocolFactory, TReadTransportFactory, TWriteTransportFactory,
+};
 
 use std::{io, slice};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub enum Response {
-  Success,
+struct BasicServer;
+
+impl TerminalWrapperSyncHandler for BasicServer {
+  fn handle_begin_execution(&self, exe_req: ProcessExecutionRequest) -> thrift::Result<RunId> {
+    Ok(RunId::new("asdf"))
+  }
+
+  fn handle_get_next_event(&self) -> thrift::Result<SubprocessEvent> {
+    Ok(SubprocessEvent::new(None, None, None, None))
+  }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub enum ServerCreationRequest;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub enum ServerCreationResponse {
+  Success(*mut BasicServer),
   Failure,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TerminalFFIError(String);
+
+pub fn create_server(request: ServerCreationRequest) -> Result<BasicServer, TerminalFFIError> {
+  let processor = TerminalWrapperSyncProcessor::new(BasicServer);
+
+  // instantiate the server
+  let i_tr_fact: Box<TReadTransportFactory> = Box::new(TBufferedReadTransportFactory::new());
+  let i_pr_fact: Box<TInputProtocolFactory> = Box::new(TBinaryInputProtocolFactory::new());
+  let o_tr_fact: Box<TWriteTransportFactory> = Box::new(TBufferedWriteTransportFactory::new());
+  let o_pr_fact: Box<TOutputProtocolFactory> = Box::new(TBinaryOutputProtocolFactory::new());
+
+  
+}
+
 #[no_mangle]
-pub extern "C" fn write_then_read(
-  handle: *mut ThriftBufferHandle,
-  mut chunk: &mut ThriftChunk,
-) -> Response
+pub extern "C" fn create_basic_thrift_server(
+  request: *const ServerCreationRequest,
+  response: *mut ServerCreationResponse,
+)
 {
-  let ThriftChunk { ptr, len, capacity } = chunk;
-  let in_bytes: &[u8] = unsafe { slice::from_raw_parts(*ptr, *len as usize) };
-  let in_string: &str = std::str::from_utf8(in_bytes).unwrap();
 
-  let out_string = Regex::new("e").unwrap().replace_all(in_string, "a");
-  let mut out_bytes: &[u8] = (*out_string).as_bytes();
-  let out_len = out_bytes.len() as usize;
 
-  /* Ensure we're not writing outside of the available memory. */
-  assert!(out_len <= *capacity as usize);
-
-  let mut write_byte_slice: &mut [u8] = unsafe { slice::from_raw_parts_mut(*ptr, out_len) };
-  io::copy(&mut out_bytes, &mut write_byte_slice).unwrap();
-  chunk.len = out_len as u64;
-
-  let mut handle = unsafe { &mut *handle };
-  match thrift_ffi::write_buffer(&mut handle, &chunk)
-    .map(|written| {
-      assert_eq!(written, chunk.len as usize);
-    })
-    .and_then(|()| thrift_ffi::read_buffer(&mut handle, &mut chunk))
-    .map(|read| {
-      /* assert_eq!(read, out_len); */
-      /* assert_eq!(read, chunk.len as usize); */
-    }) {
-    Ok(()) => Response::Success,
-    Err(_) => Response::Failure,
+  let ret = Box::new(BasicServer { buffer_handle });
+  unsafe {
+    *response = ServerCreationResponse::Success(Box::into_raw(ret));
   }
 }
 
