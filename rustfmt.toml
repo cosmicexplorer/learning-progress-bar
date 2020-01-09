@@ -1,6 +1,7 @@
 binop_separator = "Front"
 blank_lines_lower_bound = 0
 blank_lines_upper_bound = 2
+brace_style = "PreferSameLine"
 fn_single_line = true
 force_multiline_blocks = false
 format_macro_matchers = true
