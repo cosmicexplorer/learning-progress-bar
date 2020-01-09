@@ -1,6 +1,6 @@
 use parking_lot::{Mutex, RwLock};
 
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InternError(String);
@@ -37,7 +37,8 @@ pub struct Interns<T> {
 }
 
 impl<T> Interns<T> {
-  pub fn new() -> Interns<T> {
+  #[allow(clippy::new_without_default)]
+  pub fn new() -> Self {
     Interns {
       mapping: HashMap::new(),
       idx: 0,
