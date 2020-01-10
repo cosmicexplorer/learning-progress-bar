@@ -20,6 +20,8 @@
 #[macro_use]
 pub mod interning;
 
+pub mod lifecycle;
+
 pub mod model {
   use super::interning::*;
 
@@ -27,7 +29,7 @@ pub mod model {
   use parking_lot::RwLock;
   use thrift::transport::TBufferChannel;
 
-  use std::{collections::HashMap, ops::Drop, sync::Arc};
+  use std::{collections::HashMap, sync::Arc};
 
   #[derive(Debug, Eq, PartialEq, Hash)]
   pub struct User {
@@ -57,9 +59,12 @@ pub mod model {
 }
 
 pub mod transport {
-  use super::{interning::*, model::*};
+  use super::{interning::*, lifecycle::*, model::*};
 
-  use std::io::{self, Read, Write};
+  use std::{
+    convert::From,
+    io::{self, Read, Write},
+  };
 
   #[repr(C)]
   #[derive(Debug, Clone, Copy)]
@@ -69,7 +74,7 @@ pub mod transport {
   }
 
   #[repr(C)]
-  #[derive(Debug, Clone, Copy)]
+  #[derive(Debug)]
   pub enum ClientRequest {
     Monocast(MonocastClient),
   }
@@ -81,53 +86,34 @@ pub mod transport {
     fn from(e: InternError) -> Self { ThriftTransportCreationError(format!("{:?}", e)) }
   }
 
-  #[repr(C)]
-  #[derive(Clone, Copy)]
-  pub enum ClientCreationResult {
-    Created(*mut UserClientHandle),
-    Failed,
-  }
-
-  pub fn create_client(
-    request: ClientRequest,
-  ) -> Result<UserClientHandle, ThriftTransportCreationError> {
-    let handle = match request {
-      ClientRequest::Monocast(MonocastClient {
-        read_capacity,
-        write_capacity,
-      }) => {
-        UserClient::create_single_buffer_channel(read_capacity as usize, write_capacity as usize)
-      },
-    };
-    Ok(UserClientHandle::intern(handle)?)
+  impl ExternallyManagedLifecycle<UserClient, UserClientHandle, ThriftTransportCreationError>
+    for ClientRequest
+  {
+    fn make_instance(&self) -> Result<UserClient, ThriftTransportCreationError> {
+      let client = match self {
+        ClientRequest::Monocast(MonocastClient {
+          read_capacity,
+          write_capacity,
+        }) => UserClient::create_single_buffer_channel(
+          *read_capacity as usize,
+          *write_capacity as usize,
+        ),
+      };
+      Ok(client)
+    }
   }
 
   #[no_mangle]
   pub extern "C" fn create_thrift_ffi_client(
     request: *const ClientRequest,
-    result: *mut ClientCreationResult,
-  )
-  {
-    let ret = match unsafe { create_client(*request) } {
-      Ok(client) => {
-        /* Box::into_raw() will leak the memory allocated by a Box::new().
-         * Box::from_raw() will clean up the memory correctly, as well as call
-         * any `Drop` impls! */
-        let boxed = Box::new(client);
-        ClientCreationResult::Created(Box::into_raw(boxed))
-      },
-      Err(_) => ClientCreationResult::Failed,
-    };
-    unsafe {
-      *result = ret;
-    }
+  ) -> InternedObjectCreationResult {
+    let request = unsafe { &*request };
+    ClientRequest::create_handle_ffi(&request)
   }
 
   #[no_mangle]
-  pub extern "C" fn destroy_thrift_ffi_client(handle: *mut UserClientHandle) {
-    unsafe {
-      Box::from_raw(handle);
-    }
+  pub extern "C" fn destroy_thrift_ffi_client(key: InternKey) -> InternedObjectDestructionResult {
+    ClientRequest::destroy_handle_ffi(key)
   }
 
   #[derive(Debug, Clone, Eq, PartialEq)]
@@ -251,15 +237,19 @@ pub mod transport {
 #[cfg(test)]
 mod tests {
   mod transport {
-    use super::super::{interning::*, model::*, transport::*};
+    use super::super::{interning::*, lifecycle::*, model::*, transport::*};
 
     #[test]
     fn write_then_read() -> Result<(), ThriftTransportError> {
       let message = "hello! this is a test!".as_bytes();
-      let mut handle = create_client(ClientRequest::Monocast(MonocastClient {
-        read_capacity: message.len() as u64,
-        write_capacity: message.len() as u64,
-      }))?;
+      let mut handle =
+        match ClientRequest::create_handle_ffi(&ClientRequest::Monocast(MonocastClient {
+          read_capacity: message.len() as u64,
+          write_capacity: message.len() as u64,
+        })) {
+          InternedObjectCreationResult::Created(key) => UserClientHandle::from_key(key),
+          InternedObjectCreationResult::Failed => unreachable!(),
+        };
 
       let mut copied: Vec<u8> = message.iter().cloned().collect();
       let mut chunk = ThriftChunk {
@@ -291,6 +281,16 @@ mod tests {
       assert_eq!(read, written);
 
       assert_eq!(message, copied.as_slice());
+
+      assert_eq!(
+        ClientRequest::destroy_handle_ffi(handle.as_key()),
+        InternedObjectDestructionResult::Succeeded
+      );
+      /* Attempting to garbage collect again should fail! */
+      assert_eq!(
+        ClientRequest::destroy_handle_ffi(handle.as_key()),
+        InternedObjectDestructionResult::Failed,
+      );
       Ok(())
     }
   }

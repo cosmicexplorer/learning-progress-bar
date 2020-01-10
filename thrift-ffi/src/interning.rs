@@ -104,9 +104,5 @@ macro_rules! new_handle {
     }
 
     impl Handle<$into> for $name {}
-
-    impl Drop for $name {
-      fn drop(&mut self) { self.garbage_collect().unwrap(); }
-    }
   };
 }
