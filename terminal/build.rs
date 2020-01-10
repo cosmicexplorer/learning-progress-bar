@@ -40,9 +40,19 @@ fn main() -> Result<(), BindingsCreationError> {
   #[cfg(feature = "pants-injected")]
   fs::copy("streaming_interface.rs", "src/streaming_interface.rs")?;
 
+  match fs::create_dir("generated_headers") {
+    Ok(()) => (),
+    Err(_) => (),
+  };
+
+  fs::copy(
+    "thrift-ffi/thrift-ffi-bindings.h",
+    "generated_headers/thrift-ffi-bindings.h",
+  )?;
+
   generate(GenerateBindingsRequest {
     crate_dir: PathBuf::from(crate_dir),
-    bindings_file: PathBuf::from("src/terminal_wrapper_bindings.h"),
+    bindings_file: PathBuf::from("generated_headers/terminal-wrapper-bindings.h"),
     config_file: PathBuf::from("cbindgen.toml"),
     env,
   })

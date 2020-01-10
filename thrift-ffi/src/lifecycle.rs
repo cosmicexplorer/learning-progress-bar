@@ -20,11 +20,16 @@ pub trait ExternallyManagedLifecycle<T, H: Handle<T>+Debug, E: From<InternError>
   Debug {
   fn make_instance(&self) -> Result<T, E>;
 
+  fn register_handle(handle: &H) -> Result<(), E>;
+
   fn create_handle_ffi(&self) -> InternedObjectCreationResult {
     match self
       .make_instance()
       .and_then(|value| H::intern(value).map_err(|e| e.into()))
-    {
+      .and_then(|handle| {
+        Self::register_handle(&handle)?;
+        Ok(handle)
+      }) {
       Ok(handle) => InternedObjectCreationResult::Created(handle.as_key()),
       Err(e) => {
         eprintln!("Error creating handle from request {:?}: {:?}", self, e);
@@ -33,9 +38,13 @@ pub trait ExternallyManagedLifecycle<T, H: Handle<T>+Debug, E: From<InternError>
     }
   }
 
+  fn deregister_handle(handle: &H) -> Result<(), E>;
+
   fn destroy_handle_ffi(key: InternKey) -> InternedObjectDestructionResult {
     let mut handle = H::from_key(key);
-    match handle.garbage_collect() {
+    match Self::deregister_handle(&handle)
+      .and_then(|()| handle.garbage_collect().map_err(|e| e.into()))
+    {
       Ok(()) => InternedObjectDestructionResult::Succeeded,
       Err(e) => {
         eprintln!("Error destroying handle {:?}: {:?}", handle, e);

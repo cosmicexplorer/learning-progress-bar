@@ -86,7 +86,7 @@ impl<T> Interns<T> {
 macro_rules! new_handle {
   ($name:ident => $interns_name:ident : Arc < RwLock < Interns < $into:ty >> >) => {
     #[repr(C)]
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
     pub struct $name {
       key: InternKey,
     }
