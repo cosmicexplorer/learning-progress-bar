@@ -21,9 +21,20 @@
 pub mod interning;
 
 pub mod model {
+  use super::interning::*;
+
+  use lazy_static::lazy_static;
+  use parking_lot::RwLock;
   use thrift::transport::TBufferChannel;
 
-  pub struct User;
+  use std::{collections::HashMap, ops::Drop, sync::Arc};
+
+  #[derive(Debug, Eq, PartialEq, Hash)]
+  pub struct User {
+    pub id: u64,
+  }
+
+  new_handle![UserHandle => USER_HANDLES: Arc<RwLock<Interns<User>>>];
 
   pub struct UserClient {
     pub channel: TBufferChannel,
@@ -36,24 +47,19 @@ pub mod model {
     }
   }
 
+  new_handle![UserClientHandle => USER_CLIENT_HANDLES: Arc<RwLock<Interns<UserClient>>>];
+
   pub struct Topic {
-    pub users: Vec<UserClient>,
+    pub users: HashMap<User, UserClient>,
   }
+
+  new_handle![TopicHandle => TOPIC_HANDLES: Arc<RwLock<Interns<Topic>>>];
 }
 
 pub mod transport {
   use super::{interning::*, model::*};
 
-  use lazy_static::lazy_static;
-  use parking_lot::RwLock;
-
-  use std::{
-    io::{self, Read, Write},
-    ops::Drop,
-    sync::Arc,
-  };
-
-  new_handle![ThriftBufferHandle => THRIFT_BUFFER_MAPPING: Arc<RwLock<Interns<UserClient>>>];
+  use std::io::{self, Read, Write};
 
   #[repr(C)]
   #[derive(Debug, Clone, Copy)]
@@ -78,13 +84,13 @@ pub mod transport {
   #[repr(C)]
   #[derive(Clone, Copy)]
   pub enum ClientCreationResult {
-    Created(*mut ThriftBufferHandle),
+    Created(*mut UserClientHandle),
     Failed,
   }
 
   pub fn create_client(
     request: ClientRequest,
-  ) -> Result<ThriftBufferHandle, ThriftTransportCreationError> {
+  ) -> Result<UserClientHandle, ThriftTransportCreationError> {
     let handle = match request {
       ClientRequest::Monocast(MonocastClient {
         read_capacity,
@@ -93,7 +99,7 @@ pub mod transport {
         UserClient::create_single_buffer_channel(read_capacity as usize, write_capacity as usize)
       },
     };
-    Ok(ThriftBufferHandle::intern(handle)?)
+    Ok(UserClientHandle::intern(handle)?)
   }
 
   #[no_mangle]
@@ -118,7 +124,7 @@ pub mod transport {
   }
 
   #[no_mangle]
-  pub extern "C" fn destroy_thrift_ffi_client(handle: *mut ThriftBufferHandle) {
+  pub extern "C" fn destroy_thrift_ffi_client(handle: *mut UserClientHandle) {
     unsafe {
       Box::from_raw(handle);
     }
@@ -159,7 +165,7 @@ pub mod transport {
   }
 
   pub fn write_buffer(
-    handle: &mut ThriftBufferHandle,
+    handle: &mut UserClientHandle,
     chunk: &ThriftChunk,
   ) -> Result<usize, ThriftTransportError>
   {
@@ -180,7 +186,7 @@ pub mod transport {
 
   #[no_mangle]
   pub extern "C" fn write_buffer_handle(
-    handle: *mut ThriftBufferHandle,
+    handle: *mut UserClientHandle,
     chunk: ThriftChunk,
     result: *mut ThriftWriteResult,
   )
@@ -202,7 +208,7 @@ pub mod transport {
   }
 
   pub fn read_buffer(
-    handle: &mut ThriftBufferHandle,
+    handle: &mut UserClientHandle,
     chunk: &mut ThriftChunk,
   ) -> Result<usize, ThriftTransportError>
   {
@@ -224,7 +230,7 @@ pub mod transport {
 
   #[no_mangle]
   pub extern "C" fn read_buffer_handle(
-    handle: *mut ThriftBufferHandle,
+    handle: *mut UserClientHandle,
     mut chunk: ThriftChunk,
     result: *mut ThriftReadResult,
   )

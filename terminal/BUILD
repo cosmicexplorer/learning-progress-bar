@@ -2,13 +2,13 @@ cargo_subproject(
   name='terminal-rust',
   generated_resources=[
     'src/terminal_wrapper_bindings.h',
-    'thrift_ffi/thrift_ffi_bindings.h',
+    'thrift-ffi/thrift-ffi-bindings.h',
   ],
-  features=['cffi_compatible'],
+  features=['cffi-compatible'],
   cargo_output_file='libterminal_wrapper.dylib',
   sources=rglobs('*'),
   cargo_subprojects=[
-    'thrift_ffi',
+    'thrift-ffi',
   ],
   dependencies=[
     '//:rust-toolchain',

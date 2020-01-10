@@ -25,16 +25,16 @@
 // Arc<Mutex> can be more clear than needing to grok Orderings:
 #![allow(clippy::mutex_atomic)]
 
-use cffi_compat::*;
+use cbindgen_cffi_compat::*;
 
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), BindingsCreationError> {
   let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
 
-  #[cfg(feature = "cffi_compatible")]
+  #[cfg(feature = "cffi-compatible")]
   let env = Environment::CffiCompatible;
-  #[cfg(not(feature = "cffi_compatible"))]
+  #[cfg(not(feature = "cffi-compatible"))]
   let env = Environment::Normal;
 
   #[cfg(feature = "pants-injected")]

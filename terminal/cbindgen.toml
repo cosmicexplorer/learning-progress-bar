@@ -4,7 +4,7 @@ language = "C"
 
 [parse]
 parse_deps = true
-include = ["thrift_ffi"]
+include = ["thrift-ffi"]
 
 [export]
 exclude = ["InternKey", "ThriftBufferHandle", "ThriftChunk"]

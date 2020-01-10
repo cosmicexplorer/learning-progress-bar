@@ -252,6 +252,7 @@ async def execute_cargo_test(testable_target: CargoTargetAdaptor, cargo: Cargo) 
       cargo_target=testable_target,
       source_root_stripped_sources=all_merged_sources.digest,
       command=CargoCommands.test,
+      extra_cargo_output_file_paths=all_merged_sources.cargo_output_file_paths,
     ),
   )
   return TestResult.from_fallible_execute_process_result(exe_res)

@@ -65,7 +65,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cffi_compat"
+name = "cbindgen-cffi-compat"
 version = "0.1.0"
 dependencies = [
  "cbindgen 0.12.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -472,10 +472,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "thrift_ffi"
+name = "thrift-ffi"
 version = "0.1.0"
 dependencies = [
- "cffi_compat 0.1.0",
+ "cbindgen-cffi-compat 0.1.0",
  "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.6.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "thrift 0.13.0 (registry+https://github.com/rust-lang/crates.io-index)",

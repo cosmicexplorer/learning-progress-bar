@@ -9,13 +9,13 @@ crate-type = ["cdylib"]
 
 [features]
 default = []
-cffi_compatible = ["thrift_ffi/cffi_compatible"]
-pants-injected = ["thrift_ffi", "cffi_compat"]
+cffi-compatible = ["thrift-ffi/cffi-compatible"]
+pants-injected = ["thrift-ffi", "cbindgen-cffi-compat"]
 
 [dependencies]
 regex = "1"
 thrift = "0.13.0"
-thrift_ffi = { path = "thrift_ffi", optional = true }
+thrift-ffi = { path = "thrift-ffi", optional = true }
 
 [build-dependencies]
-cffi_compat = { path = "thrift_ffi/cffi_compat", optional = true }
+cbindgen-cffi-compat = { path = "thrift-ffi/cbindgen-cffi-compat", optional = true }
