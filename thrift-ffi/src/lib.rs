@@ -149,6 +149,12 @@ pub mod user_client {
     topic_key: InternKey,
   }
 
+  impl UserClientRequest {
+    fn user(&self) -> UserHandle { UserHandle::from_key(self.user_key) }
+
+    fn topic(&self) -> TopicHandle { TopicHandle::from_key(self.topic_key) }
+  }
+
   #[cfg(test)]
   impl UserClientRequest {
     #[allow(clippy::new_without_default)]
@@ -166,12 +172,6 @@ pub mod user_client {
         topic_key: topic.as_key(),
       }
     }
-  }
-
-  impl UserClientRequest {
-    fn user(&self) -> UserHandle { UserHandle::from_key(self.user_key) }
-
-    fn topic(&self) -> TopicHandle { TopicHandle::from_key(self.topic_key) }
   }
 
   #[derive(Debug)]
@@ -198,9 +198,9 @@ pub mod user_client {
 
     fn register_handle(handle: &UserClientHandle) -> Result<(), UserClientHandleError> {
       let user_client_ref = handle.dereference()?;
-      let user_client = user_client_ref.lock();
+      let user_client_lock = user_client_ref.lock();
 
-      let UserClient { user, topic, .. } = &*user_client;
+      let UserClient { user, topic, .. } = &*user_client_lock;
 
       let topic_ref = topic.dereference()?;
       let mut topic_lock = topic_ref.lock();
@@ -218,9 +218,9 @@ pub mod user_client {
 
     fn deregister_handle(handle: &UserClientHandle) -> Result<(), UserClientHandleError> {
       let user_client_ref = handle.dereference()?;
-      let user_client = user_client_ref.lock();
+      let user_client_lock = user_client_ref.lock();
 
-      let UserClient { user, topic, .. } = &*user_client;
+      let UserClient { user, topic, .. } = &*user_client_lock;
 
       let topic_ref = topic.dereference()?;
       let mut topic_lock = topic_ref.lock();
@@ -296,10 +296,7 @@ pub mod user_client {
     let written = {
       let client_ref = handle.dereference()?;
       let mut client = client_ref.lock();
-      let UserClient {
-        ref mut channel, ..
-      } = *client;
-      channel.write(byte_slice)?
+      client.channel.write(byte_slice)?
     };
     assert!(written <= chunk.len as usize);
     Ok(written)
@@ -324,7 +321,7 @@ pub mod user_client {
   #[repr(C)]
   #[derive(Clone, Copy)]
   pub enum ThriftReadResult {
-    Read(ThriftChunk),
+    Read(u64),
     Failed,
   }
 
@@ -341,10 +338,7 @@ pub mod user_client {
     let read = {
       let client_ref = handle.dereference()?;
       let mut client = client_ref.lock();
-      let UserClient {
-        ref mut channel, ..
-      } = *client;
-      channel.read(byte_slice)?
+      client.channel.read(byte_slice)?
     };
     assert!(read <= chunk.capacity as usize);
     chunk.len = read as u64;
@@ -361,7 +355,7 @@ pub mod user_client {
     let ret = match unsafe { read_buffer(&mut *handle, &mut chunk) } {
       Ok(len) => {
         chunk.len = len as u64;
-        ThriftReadResult::Read(chunk)
+        ThriftReadResult::Read(chunk.len)
       },
       Err(_) => ThriftReadResult::Failed,
     };
@@ -373,7 +367,7 @@ pub mod user_client {
 
 #[cfg(test)]
 mod tests {
-  mod transport {
+  mod user_client {
     use super::super::{interning::*, lifecycle::*, model::*, topic::*, user::*, user_client::*};
 
     use std::{convert::From, fmt::Debug};
@@ -385,17 +379,40 @@ mod tests {
       R: ExternallyManagedLifecycle<T, H, E>,
     >(
       request: R,
-    ) -> Result<H, E> {
+    ) -> H {
       match R::create_handle_ffi(&request) {
-        InternedObjectCreationResult::Created(key) => Ok(H::from_key(key)),
+        InternedObjectCreationResult::Created(key) => H::from_key(key),
         InternedObjectCreationResult::Failed => unreachable!(),
       }
     }
 
     #[test]
+    fn invalid_gc_sequence() {
+      let user = extract_handle(UserRequest);
+      let topic = extract_handle(TopicRequest);
+
+      let handle = extract_handle(UserClientRequest::new(0, 0, user, topic));
+
+      /* Destroy the user and topic. The user client handle should fail to deregister. */
+      assert_eq!(
+        UserRequest::destroy_handle_ffi(user.as_key()),
+        InternedObjectDestructionResult::Succeeded,
+      );
+      assert_eq!(
+        TopicRequest::destroy_handle_ffi(topic.as_key()),
+        InternedObjectDestructionResult::Succeeded,
+      );
+
+      assert_eq!(
+        UserClientRequest::destroy_handle_ffi(handle.as_key()),
+        InternedObjectDestructionResult::Failed,
+      );
+    }
+
+    #[test]
     fn write_then_read() -> Result<(), ThriftTransportError> {
-      let user = extract_handle(UserRequest)?;
-      let topic = extract_handle(TopicRequest)?;
+      let user = extract_handle(UserRequest);
+      let topic = extract_handle(TopicRequest);
 
       let message = "hello! this is a test!".as_bytes();
       let mut handle = extract_handle(UserClientRequest::new(
@@ -403,7 +420,7 @@ mod tests {
         message.len(),
         user,
         topic,
-      ))?;
+      ));
 
       let mut copied: Vec<u8> = message.iter().cloned().collect();
       let mut chunk = ThriftChunk {
