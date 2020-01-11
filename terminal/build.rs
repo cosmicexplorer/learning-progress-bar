@@ -27,7 +27,7 @@
 
 use cbindgen_cffi_compat::*;
 
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::{Path, PathBuf}};
 
 fn main() -> Result<(), BindingsCreationError> {
   let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
@@ -38,22 +38,24 @@ fn main() -> Result<(), BindingsCreationError> {
   let env = Environment::Normal;
 
   #[cfg(feature = "pants-injected")]
-  fs::copy("streaming_interface.rs", "src/streaming_interface.rs")?;
+  fs::copy("streaming_interface.rs", "src/streaming_interface.rs")
+    .map_err(|e| format!("thrift copy: {:?}", e))?;
 
-  match fs::create_dir("generated_headers") {
-    Ok(()) => (),
-    Err(_) => (),
-  };
-
-  fs::copy(
-    "thrift-ffi/thrift-ffi-bindings.h",
-    "generated_headers/thrift-ffi-bindings.h",
-  )?;
+  if !Path::new("generated_headers").exists() {
+    fs::create_dir("generated_headers").map_err(|e| format!("generated_headers dir: {:?}", e))?;
+  }
 
   generate(GenerateBindingsRequest {
-    crate_dir: PathBuf::from(crate_dir),
+    crate_dir: PathBuf::from(crate_dir.clone()),
     bindings_file: PathBuf::from("generated_headers/terminal-wrapper-bindings.h"),
     config_file: PathBuf::from("cbindgen.toml"),
+    env,
+  })?;
+
+  generate(GenerateBindingsRequest {
+    crate_dir: PathBuf::from(crate_dir).join("thrift-ffi"),
+    bindings_file: PathBuf::from("generatd_headers/thrift-ffi-bindings.h"),
+    config_file: PathBuf::from("thrift-ffi/cbindgen.toml"),
     env,
   })
 }

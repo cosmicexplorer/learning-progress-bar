@@ -13,7 +13,7 @@ from thrift.transport.TTransport import TTransportBase
 import generated_headers
 import target.debug
 
-from terminal.streaming_interface.TerminalWrapper import TerminalWrapper
+from terminal.streaming_interface import TerminalWrapper
 from terminal.streaming_interface.constants import *
 from terminal.streaming_interface.ttypes import *
 
@@ -184,17 +184,11 @@ def main() -> None:
   # protocol = TBinaryProtocol(transport)
   # client = TerminalWrapper.Client(protocol)
 
-  with ffi.new('ClientRequest*') as request,\
-       ffi.new('MonocastClient*') as monocast:
-    request.tag = lib.Monocast
-    monocast = dict(
-      read_capacity=300,
-      write_capacity=300,
-    )
-    request.monocast = (monocast[0],)
-    result = lib.create_thrift_ffi_client(request, result)
+  with ffi.new('UserRequest*') as request:
+    result = lib.create_user(request)
     assert result.tag == lib.Created
-    thrift_buffer_handle = result.created.tup_0
-  print(f'thrift_buffer_handle = {thrift_buffer_handle}')
+    user_handle = result.created.tup_0
+  print(f'user_handle = {user_handle}')
 
-  lib.destroy_thrift_ffi_client(thrift_buffer_handle)
+  result = lib.destroy_thrift_ffi_client(user_handle)
+  assert result.tag == lib.Succeeded
