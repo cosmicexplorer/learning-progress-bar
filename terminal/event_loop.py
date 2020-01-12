@@ -184,11 +184,15 @@ def main() -> None:
   # protocol = TBinaryProtocol(transport)
   # client = TerminalWrapper.Client(protocol)
 
-  with ffi.new('UserRequest*') as request:
-    result = lib.create_user(request)
+  with ffi.new('UserRequest*') as request,\
+       ffi.new('InternedObjectCreationResult*') as result:
+    lib.create_user(request, result)
+    result = result[0]
     assert result.tag == lib.Created
     user_handle = result.created.tup_0
   print(f'user_handle = {user_handle}')
 
-  result = lib.destroy_thrift_ffi_client(user_handle)
-  assert result.tag == lib.Succeeded
+  with ffi.new('InternedObjectDestructionResult*') as result:
+    lib.destroy_user(user_handle, result)
+    result = result[0]
+    assert result == lib.Succeeded

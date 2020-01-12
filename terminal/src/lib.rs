@@ -29,15 +29,16 @@
 // other unsafeness.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-#[cfg(not(feature = "pants-injected"))]
-compile_error!("This crate currently requires the \"pants-injected\" feature to be activated!");
-
+#[cfg(feature = "pants-injected")]
 pub mod streaming_interface;
 /* use streaming_interface::*; */
 
+pub use thrift_ffi::all::*;
+
 /* use regex::Regex; */
 /* use thrift::transport::{ */
-/*   TInputProtocolFactory, TOutputProtocolFactory, TReadTransportFactory, TWriteTransportFactory, */
+/* TInputProtocolFactory, TOutputProtocolFactory, TReadTransportFactory,
+ * TWriteTransportFactory, */
 /* }; */
 
 /* use std::{io, slice}; */
@@ -47,13 +48,14 @@ pub mod streaming_interface;
 /* struct BasicServer; */
 
 /* impl TerminalWrapperSyncHandler for BasicServer { */
-/*   fn handle_begin_execution(&self, exe_req: ProcessExecutionRequest) -> thrift::Result<RunId> { */
-/*     Ok(RunId::new("asdf")) */
-/*   } */
+/* fn handle_begin_execution(&self, exe_req: ProcessExecutionRequest) ->
+ * thrift::Result<RunId> { */
+/* Ok(RunId::new("asdf")) */
+/* } */
 
-/*   fn handle_get_next_event(&self) -> thrift::Result<SubprocessEvent> { */
-/*     Ok(SubprocessEvent::new(None, None, None, None)) */
-/*   } */
+/* fn handle_get_next_event(&self) -> thrift::Result<SubprocessEvent> { */
+/* Ok(SubprocessEvent::new(None, None, None, None)) */
+/* } */
 /* } */
 
 /* #[repr(C)] */
@@ -63,37 +65,42 @@ pub mod streaming_interface;
 /* #[repr(C)] */
 /* #[derive(Clone, Copy)] */
 /* pub enum ServerCreationResponse { */
-/*   Success(*mut BasicServer), */
-/*   Failure, */
+/* Success(*mut BasicServer), */
+/* Failure, */
 /* } */
 
 /* #[derive(Debug, Clone, Eq, PartialEq)] */
 /* pub struct TerminalFFIError(String); */
 
-/* pub fn create_server(request: ServerCreationRequest) -> Result<BasicServer, TerminalFFIError> { */
-/*   let processor = TerminalWrapperSyncProcessor::new(BasicServer); */
+/* pub fn create_server(request: ServerCreationRequest) ->
+ * Result<BasicServer, TerminalFFIError> { */
+/* let processor = TerminalWrapperSyncProcessor::new(BasicServer); */
 
-/*   // instantiate the server */
-/*   let i_tr_fact: Box<TReadTransportFactory> = Box::new(TBufferedReadTransportFactory::new()); */
-/*   let i_pr_fact: Box<TInputProtocolFactory> = Box::new(TBinaryInputProtocolFactory::new()); */
-/*   let o_tr_fact: Box<TWriteTransportFactory> = Box::new(TBufferedWriteTransportFactory::new()); */
-/*   let o_pr_fact: Box<TOutputProtocolFactory> = Box::new(TBinaryOutputProtocolFactory::new()); */
+/* // instantiate the server */
+/* let i_tr_fact: Box<TReadTransportFactory> =
+ * Box::new(TBufferedReadTransportFactory::new()); */
+/* let i_pr_fact: Box<TInputProtocolFactory> =
+ * Box::new(TBinaryInputProtocolFactory::new()); */
+/* let o_tr_fact: Box<TWriteTransportFactory> =
+ * Box::new(TBufferedWriteTransportFactory::new()); */
+/* let o_pr_fact: Box<TOutputProtocolFactory> =
+ * Box::new(TBinaryOutputProtocolFactory::new()); */
 
 
 /* } */
 
 /* #[no_mangle] */
 /* pub extern "C" fn create_basic_thrift_server( */
-/*   request: *const ServerCreationRequest, */
-/*   response: *mut ServerCreationResponse, */
+/* request: *const ServerCreationRequest, */
+/* response: *mut ServerCreationResponse, */
 /* ) */
 /* { */
 
 
-/*   let ret = Box::new(BasicServer { buffer_handle }); */
-/*   unsafe { */
-/*     *response = ServerCreationResponse::Success(Box::into_raw(ret)); */
-/*   } */
+/* let ret = Box::new(BasicServer { buffer_handle }); */
+/* unsafe { */
+/* *response = ServerCreationResponse::Success(Box::into_raw(ret)); */
+/* } */
 /* } */
 
 #[cfg(test)]

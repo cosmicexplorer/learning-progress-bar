@@ -56,14 +56,24 @@ pub mod user {
   }
 
   #[no_mangle]
-  pub extern "C" fn create_user(request: *const UserRequest) -> InternedObjectCreationResult {
+  pub extern "C" fn create_user(
+    request: *const UserRequest,
+    result: *mut InternedObjectCreationResult,
+  )
+  {
     let request = unsafe { &*request };
-    UserRequest::create_handle_ffi(&request)
+    let ret = UserRequest::create_handle_ffi(&request);
+    unsafe {
+      *result = ret;
+    }
   }
 
   #[no_mangle]
-  pub extern "C" fn destroy_user(key: InternKey) -> InternedObjectDestructionResult {
-    UserRequest::destroy_handle_ffi(key)
+  pub extern "C" fn destroy_user(key: InternKey, result: *mut InternedObjectDestructionResult) {
+    let ret = UserRequest::destroy_handle_ffi(key);
+    unsafe {
+      *result = ret;
+    }
   }
 }
 
@@ -467,10 +477,14 @@ pub mod user_client {
   }
 }
 
+pub mod all {
+  pub use super::{interning::*, lifecycle::*, topic::*, user::*, user_client::*};
+}
+
 #[cfg(test)]
 mod tests {
   mod user_client {
-    use super::super::{interning::*, lifecycle::*, topic::*, user::*, user_client::*};
+    use super::super::all::*;
 
     use std::{convert::From, fmt::Debug};
 
@@ -579,18 +593,19 @@ mod tests {
     }
 
     ///
-    /// This test vaguely maps out the current communication model. Two 'User's connect to a single
-    /// 'Topic' (each thereby creating their own 'UserClient' connected to the 'Topic'). All
-    /// messages sent with 'client_send_message()` are broadcast to all other participants in the
+    /// This test vaguely maps out the current communication model. Two 'User's
+    /// connect to a single 'Topic' (each thereby creating their own
+    /// 'UserClient' connected to the 'Topic'). All messages sent with
+    /// 'client_send_message()` are broadcast to all other participants in the
     /// 'Topic', which is then read back in 'client_receive_message()'.
     ///
-    /// In this case, the two users are writing their own payload, then reading the other's payload
-    /// as they each exchange a single write and read to the same topic.
+    /// In this case, the two users are writing their own payload, then reading
+    /// the other's payload as they each exchange a single write and read to
+    /// the same topic.
     ///
-    /// TODO: All of the logic that is being tested here relies on synchronous execution of the
-    /// statements in this test. It would be good to think early on about how/whether to generalize
-    /// that.
-    ///
+    /// TODO: All of the logic that is being tested here relies on synchronous
+    /// execution of the statements in this test. It would be good to think
+    /// early on about how/whether to generalize that.
     #[test]
     fn write_then_read() -> Result<(), ThriftTransportError> {
       let capacity: usize = 400;
@@ -634,9 +649,10 @@ mod tests {
       zero_out_thrift_chunk(&mut chunk1, &message1);
       zero_out_thrift_chunk(&mut chunk2, &message2);
 
-      /* We know how much we expect to be reading -- we will be reading the content of the other
-       * user client's message. To signal how much to (try to) read in client_receive_message(), we
-       * set the `len` field of the ThriftChunk that we pass in to the function. */
+      /* We know how much we expect to be reading -- we will be reading the content
+       * of the other user client's message. To signal how much to (try to)
+       * read in client_receive_message(), we set the `len` field of the
+       * ThriftChunk that we pass in to the function. */
       chunk1.len = message2.len() as u64;
       let read1 = client_receive_message(user_client1, &mut chunk1)?;
       assert_eq!(read1, written2);
