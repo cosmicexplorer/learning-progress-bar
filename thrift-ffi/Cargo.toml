@@ -13,6 +13,7 @@ cffi-compatible = []
 pants-injected = []
 
 [dependencies]
+itertools = "0.8.2"
 lazy_static = "1"
 parking_lot = "0.6"
 thrift = "0.13.0"

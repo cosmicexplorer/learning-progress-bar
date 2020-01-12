@@ -54,7 +54,7 @@ fn main() -> Result<(), BindingsCreationError> {
 
   generate(GenerateBindingsRequest {
     crate_dir: PathBuf::from(crate_dir).join("thrift-ffi"),
-    bindings_file: PathBuf::from("generatd_headers/thrift-ffi-bindings.h"),
+    bindings_file: PathBuf::from("generated_headers/thrift-ffi-bindings.h"),
     config_file: PathBuf::from("thrift-ffi/cbindgen.toml"),
     env,
   })

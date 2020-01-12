@@ -1,6 +1,6 @@
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, convert::From, fmt::Debug, sync::Arc};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InternError(String);
@@ -14,16 +14,41 @@ pub trait Interned<T> {
   fn from_key(key: InternKey) -> Self;
   fn interns() -> Arc<RwLock<Interns<T>>>;
 
-  fn dereference(&self) -> Result<Arc<Mutex<T>>, InternError> {
+  fn dereference(&self) -> Result<Arc<RwLock<T>>, InternError> {
     Ok(Self::interns().read().get(self.as_key())?)
   }
 
   fn garbage_collect(&mut self) -> Result<(), InternError> {
     Ok(Self::interns().write().garbage_collect(self.as_key())?)
   }
+
+  fn extract<ReturnType, E: From<InternError>+Debug, F: Fn(&T) -> Result<ReturnType, E>>(
+    &self,
+    f: F,
+  ) -> Result<ReturnType, E>
+  {
+    let this_ref = self.dereference()?;
+    let this_lock = this_ref.read();
+    f(&*this_lock)
+  }
+
+  fn extract_mut<
+    ReturnType,
+    E: From<InternError>+Debug,
+    F: FnMut(&mut T) -> Result<ReturnType, E>,
+  >(
+    &mut self,
+    f: &mut F,
+  ) -> Result<ReturnType, E>
+  {
+    let this_ref = self.dereference()?;
+    let mut this_lock = this_ref.write();
+    f(&mut *this_lock)
+  }
 }
 
-/* NB: The `: Sized` is needed so we can return `Self` in `::intern()`! */
+/* NB: The `: Sized` is needed so we can return `Self` in `::intern()`! (We
+ * may not even need to be doing that, though!) */
 pub trait Handle<T>: Interned<T>+Sized {
   fn intern(value: T) -> Result<Self, InternError> {
     let key = Self::interns().write().intern(value)?;
@@ -32,7 +57,7 @@ pub trait Handle<T>: Interned<T>+Sized {
 }
 
 pub struct Interns<T> {
-  mapping: HashMap<InternKey, Arc<Mutex<T>>>,
+  mapping: HashMap<InternKey, Arc<RwLock<T>>>,
   idx: u64,
 }
 
@@ -51,7 +76,7 @@ impl<T> Interns<T> {
       self.idx += 1;
       InternKey(idx)
     };
-    let wrapped = Arc::new(Mutex::new(value));
+    let wrapped = Arc::new(RwLock::new(value));
     if self.mapping.insert(key, wrapped).is_some() {
       Err(InternError(format!(
         "key {:?} should not exist already, but did!",
@@ -62,7 +87,7 @@ impl<T> Interns<T> {
     }
   }
 
-  pub fn get(&self, key: InternKey) -> Result<Arc<Mutex<T>>, InternError> {
+  pub fn get(&self, key: InternKey) -> Result<Arc<RwLock<T>>, InternError> {
     self
       .mapping
       .get(&key)
