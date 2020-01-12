@@ -33,6 +33,12 @@
 pub mod streaming_interface;
 /* use streaming_interface::*; */
 
+/* NB: This ensures that our produced cdylib will contain the symbols exported by the thrift-ffi
+ * library, such as the create_user() and destroy_user() functions. Our exported library will both:
+ * (1) Have whatever FFI we want to export in this lib.rs *for a rust client*!
+ * (2) Re-expose the symbols for the base thrift FFI idea from the thrift-ffi crate so that those
+ *     can be used e.g. by python cffi!
+ */
 pub use thrift_ffi::all::*;
 
 /* use regex::Regex; */

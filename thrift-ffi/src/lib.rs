@@ -19,6 +19,17 @@
 // other unsafeness.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+/* NB: See the note in the `terminal` crate's `lib.rs` file about why
+ * exporting all of these symbols is necessary for any downstream rust
+ * crates, because the cdylibs that dependees export will all need to have
+ * this crate's symbols *also* exported on top of whatever *other* FFI they
+ * may want to have. */
+pub mod all {
+  pub use super::{interning::*, lifecycle::*, topic::*, user::*, user_client::*, util::*};
+}
+
+pub mod util;
+
 #[macro_use]
 pub mod interning;
 
@@ -129,7 +140,7 @@ pub mod topic {
 }
 
 pub mod user_client {
-  use super::{interning::*, lifecycle::*, topic::*, user::*};
+  use super::{interning::*, lifecycle::*, topic::*, user::*, util::*};
 
   /* FIXME: The new_handle![] macro doesn't create a new scope to locally
    * import everything it uses to define the '*Handle' structs! This is super
@@ -226,20 +237,19 @@ pub mod user_client {
     }
 
     fn register_handle(handle: &UserClientHandle) -> Result<(), UserClientHandleError> {
-      /* FIXME: figure out how to snag the `user` and `topic` in a single
-       * statement!!! */
-      let result: Result<(UserHandle, TopicHandle), UserClientHandleError> =
-        handle.extract(|UserClient { user, topic, .. }| Ok((*user, *topic)));
-      let (user, mut topic) = result?;
+      let (user, mut topic) = handle
+        .extract::<(UserHandle, TopicHandle), UserClientHandleError, _>(
+          |UserClient { user, topic, .. }| Ok((*user, *topic)),
+        )?;
 
-      let topic2 = topic.clone();
+      let topic_str = format!("{:?}", topic);
       topic.extract_mut(&mut move |Topic {
                                      user_client_mapping,
                                    }| {
         if let Some(user_client) = user_client_mapping.get(&user) {
           Err(UserClientHandleError(format!(
             "topic {:?} already contained a client {:?} for user {:?}",
-            topic2, user_client, &user
+            topic_str, user_client, &user
           )))
         } else {
           user_client_mapping.insert(user, *handle);
@@ -249,9 +259,10 @@ pub mod user_client {
     }
 
     fn deregister_handle(handle: &UserClientHandle) -> Result<(), UserClientHandleError> {
-      let result: Result<(UserHandle, TopicHandle), UserClientHandleError> =
-        handle.extract(|UserClient { user, topic, .. }| Ok((*user, *topic)));
-      let (user, mut topic) = result?;
+      let (user, mut topic) = handle
+        .extract::<(UserHandle, TopicHandle), UserClientHandleError, _>(
+          |UserClient { user, topic, .. }| Ok((*user, *topic)),
+        )?;
 
       let topic2 = topic.clone();
       topic.extract_mut(&mut move |Topic {
@@ -328,13 +339,13 @@ pub mod user_client {
     let byte_slice = unsafe { std::slice::from_raw_parts(*ptr, len) };
 
     /* Get the topic, and message every other client *synchronously*! */
-    let result: Result<(UserHandle, TopicHandle), UserClientHandleError> =
-      handle.extract(|UserClient { user, topic, .. }| Ok((*user, *topic)));
-    let (user, topic) = result?;
+    let (user, topic) = handle.extract::<(UserHandle, TopicHandle), UserClientHandleError, _>(
+      |UserClient { user, topic, .. }| Ok((*user, *topic)),
+    )?;
 
     /* Temporarily lock the topic handle to get all the other clients to message! */
     /* FIXME(PERFORMANCE): This could be cached! */
-    let other_clients_result: Result<Vec<UserClientHandle>, UserClientHandleError> = topic.extract(
+    let other_clients = topic.extract::<Vec<UserClientHandle>, UserClientHandleError, _>(
       |Topic {
          user_client_mapping,
        }| {
@@ -346,41 +357,40 @@ pub mod user_client {
             .collect(),
         )
       },
-    );
-    let other_clients = other_clients_result?;
+    )?;
 
     /* FIXME(CONCURRENCY): what happens if a UserClientHandle is deregistered in
      * between the creation of `other_clients` and this for loop? A spurious
      * error?! */
     /* TODO(PERFORMANCE): This iteration should/could all be in parallel! */
-    let all_writes_errors: Vec<ThriftTransportError> = other_clients
-      .into_iter()
-      .flat_map(|mut c| {
-        let c_str = format!("{:?}", c);
-        match c.extract_mut(&mut move |UserClient { channel, .. }| {
-          eprintln!(
-            "written {} to client {:?}",
-            std::str::from_utf8(byte_slice).unwrap(),
-            c_str
-          );
-          let written = channel.write(byte_slice)?;
-          assert!(written <= len);
-          if written < len {
-            Err(ThriftTransportError(format!(
-              "wrote fewer bytes to user {:?} on topic {:?} than expected ({:?} vs {:?})",
-              user, topic, written, len
-            )))
-          } else {
-            Ok(())
-          }
-        }) {
-          Ok(()) => None,
-          Err(e) => Some(e),
-        }
-      })
-      .collect();
+    let (_, write_errors): (_, Vec<_>) =
+      other_clients
+        .into_iter()
+        .split_result_sequence_mut(|mut c| {
+          c.extract_mut(&mut |UserClient {
+                                channel,
+                                user: other_user,
+                                ..
+                              }| {
+            let written = channel.write(byte_slice)?;
+            assert!(written <= len);
+            /* Find all writes which succeeded, but didn't write as many bytes as we
+             * wanted to. */
+            /* FIXME: For now we convert these into errors. It's not immediately clear
+             * what the right behavior should be for the topic-based multicast model
+             * currently used here. */
+            if written < len {
+              Err(ThriftTransportError(format!(
+                "wrote fewer bytes to user {:?} on topic {:?} than expected ({:?} vs {:?})",
+                other_user, topic, written, len
+              )))
+            } else {
+              Ok(())
+            }
+          })
+        });
 
-    if all_writes_errors.is_empty() {
+    if write_errors.is_empty() {
       /* If no error, return the expected number of bytes. */
       Ok(len)
     } else {
@@ -389,7 +399,7 @@ pub mod user_client {
       use itertools::Itertools;
       Err(ThriftTransportError(format!(
         "errors writing:\n{:?}",
-        all_writes_errors.into_iter().format("\n")
+        write_errors.into_iter().format("\n")
       )))
     }
   }
@@ -429,32 +439,21 @@ pub mod user_client {
     /* Please check out the docs at
      * https://docs.rs/thrift/0.0.4/thrift/transport/struct.TBufferChannel.html for more info on the
      * curious API of the TBufferChannel object (<3 thrift though!!). */
-    let read: Result<usize, ThriftTransportError> =
-      handle.extract_mut(&mut |UserClient { channel, .. }| {
-        let read_initial = channel.read(byte_slice)?;
-        Ok(if read_initial < len {
-          /* FIXME(CONCURRENCY): Does this *necessarily* mean that the read buffer was
-           * emptied? What is the method to check that here (since we are about
-           * to overwriite whatever's left of the read buffer)! */
-          assert!(!channel.bytes().any(|_| true));
-          /* If the read buffer is now indeed empty, let's copy everything from the
-           * write buffer! */
-          channel.copy_write_buffer_to_read_buffer();
-          let read_after_copying_from_write_buffer =
-            channel.read(&mut byte_slice[read_initial..])?;
-          read_initial + read_after_copying_from_write_buffer
-        } else {
-          read_initial
-        })
-      });
-
-    read.map(|read| {
-      eprintln!(
-        "byte slice to be read by {:?}: {:>}",
-        handle,
-        std::str::from_utf8(&byte_slice[..read]).unwrap()
-      );
-      read
+    handle.extract_mut(&mut |UserClient { channel, .. }| {
+      let read_initial = channel.read(byte_slice)?;
+      Ok(if read_initial < len {
+        /* FIXME(CONCURRENCY): Does this *necessarily* mean that the read buffer was
+         * emptied? What is the method to check that here (since we are about
+         * to overwriite whatever's left of the read buffer)! */
+        assert!(!channel.bytes().any(|_| true));
+        /* If the read buffer is now indeed empty, let's copy everything from the
+         * write buffer! */
+        channel.copy_write_buffer_to_read_buffer();
+        let read_after_copying_from_write_buffer = channel.read(&mut byte_slice[read_initial..])?;
+        read_initial + read_after_copying_from_write_buffer
+      } else {
+        read_initial
+      })
     })
   }
 
@@ -475,10 +474,6 @@ pub mod user_client {
       },
     }
   }
-}
-
-pub mod all {
-  pub use super::{interning::*, lifecycle::*, topic::*, user::*, user_client::*};
 }
 
 #[cfg(test)]
@@ -613,12 +608,12 @@ mod tests {
       let topic = extract_handle(TopicRequest);
 
       let message1 = "hello! this is a test!".as_bytes();
-      let (user1, mut user_client1, mut chunk1) =
+      let (user1, user_client1, mut chunk1) =
         create_new_user_with_client_for_topic(capacity, topic, &message1);
 
       /* NB: Using the same topic!! */
       let message2 = "hello! also a test!".as_bytes();
-      let (user2, mut user_client2, mut chunk2) =
+      let (user2, user_client2, mut chunk2) =
         create_new_user_with_client_for_topic(capacity, topic, &message2);
 
       let written1 = client_send_message(user_client1, &chunk1)?;
@@ -627,25 +622,8 @@ mod tests {
       let written2 = client_send_message(user_client2, &chunk2)?;
       assert_eq!(written2, chunk2.len as usize);
 
-      /* Copy written bytes to the read buffer so we can be sure to read the exact
-       * same bytes back out again. */
-      let extract1_result: Result<(), ThriftTransportError> =
-        user_client1.extract_mut(&mut |UserClient {
-                                         ref mut channel, ..
-                                       }| {
-          Ok(channel.copy_write_buffer_to_read_buffer())
-        });
-      extract1_result?;
-      let extract2_result: Result<(), ThriftTransportError> =
-        user_client2.extract_mut(&mut |UserClient {
-                                         ref mut channel, ..
-                                       }| {
-          Ok(channel.copy_write_buffer_to_read_buffer())
-        });
-      extract2_result?;
-
-      /* Zero out the message so we can ensure that it is read back in full from
-       * the thrift transport. */
+      /* Zero out the original message so we can ensure that it is read back in full from the thrift
+       * transport. */
       zero_out_thrift_chunk(&mut chunk1, &message1);
       zero_out_thrift_chunk(&mut chunk2, &message2);
 
