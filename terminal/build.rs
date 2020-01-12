@@ -27,7 +27,10 @@
 
 use cbindgen_cffi_compat::*;
 
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+  env, fs,
+  path::{Path, PathBuf},
+};
 
 fn main() -> Result<(), BindingsCreationError> {
   let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
@@ -52,10 +55,14 @@ fn main() -> Result<(), BindingsCreationError> {
     env,
   })?;
 
+  #[cfg(feature = "pants-injected")]
+  let thrift_ffi_dir = PathBuf::from("thrift-ffi");
+  #[cfg(not(feature = "pants-injected"))]
+  let thrift_ffi_dir = PathBuf::from("../thrift-ffi");
   generate(GenerateBindingsRequest {
-    crate_dir: PathBuf::from("../thrift-ffi"),
+    crate_dir: thrift_ffi_dir.clone(),
     bindings_file: PathBuf::from("generated_headers/thrift-ffi-bindings.h"),
-    config_file: PathBuf::from("../thrift-ffi/cbindgen.toml"),
+    config_file: thrift_ffi_dir.clone().join("cbindgen.toml"),
     env,
   })
 }

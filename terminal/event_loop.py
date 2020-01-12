@@ -1,14 +1,16 @@
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Thread
 from types import ModuleType
 from typing import Any, AsyncGenerator, Optional, Union, cast
 
 from cffi import FFI
 from pants.util.contextutil import temporary_file
 from pkg_resources import DefaultProvider, ZipProvider, get_provider
-from thrift.protocol.TBinaryProtocol import TBinaryProtocol
-from thrift.transport.TTransport import TTransportBase
+from thrift.protocol.TJsonProtocol import TJsonProtocol, TSimpleJSONProtocolFactory
+from thrift.transport.TTransport import TTransportBase, TTransportFactoryBase
+from thrift.server.TServer import TSimpleServer
 
 import generated_headers
 import target.debug
@@ -60,12 +62,39 @@ def bootstrap_thrift_ffi() -> FFI:
   return ffi, lib
 
 
+class StreamingInterfaceHandler:
+
+  def __init__(self):
+    self._die: bool = False
+
+  def set_die(self):
+    self._die = True
+
+  def beginExecution(self, exe_req: ProcessExecutionRequest) -> RunId:
+    if self._die:
+      raise Exception(f'dying! exe req was: {exe_req}')
+    return RunId('asdf')
+
+  def getNextEvent(self) -> SubprocessEvent:
+    if self._die:
+      raise Exception(f'dying! no next event!')
+    return SubprocessEvent(
+      type=EventType.START,
+      timing=TimingWithinRun(0),
+      run_id=RunId('asdf'),
+      exit_status=None,
+    )
+
+
 class FFIMonocastTransport(TTransportBase):
 
-  def __init__(self, ffi, lib, read_capacity, write_capacity):
+  def __init__(self, ffi, lib, user, topic, target_user_kind, read_capacity, write_capacity):
     self._handle = None
     self._ffi = ffi
     self._lib = lib
+    self._user = user
+    self._topic = topic
+    self._target_user_kind = target_user_kind
     self._read_capacity = read_capacity
     self._write_capacity = write_capacity
     self._is_open = False
@@ -82,15 +111,17 @@ class FFIMonocastTransport(TTransportBase):
   def open(self):
     assert not self._is_open
 
-    with self._ffi.new('ClientRequest*') as request,\
-         self._ffi.new('ClientCreationResult*') as result:
-      request.tag = self._lib.Monocast
-      monocast = dict(
+    with self._ffi.new('UserClientRequest*') as request,\
+         self._ffi.new('InternedObjectCreationResult*') as result:
+      request = dict(
         read_capacity=self._read_capacity,
         write_capacity=self._write_capacity,
+        user_key=self._user,
+        topic_key=self._topic,
+        target_kind=self._target_user_kind,
       )
-      request.monocast = (monocast,)
-      self._lib.create_thrift_ffi_client(request, result)
+      self._lib.create_user_client(request, result)
+      result = result[0]
       assert result.tag == self._lib.Created
       self._handle = result.created.tup_0
 
@@ -120,7 +151,12 @@ class FFIMonocastTransport(TTransportBase):
     self._ffi.release(self._cur_write_result)
     self._cur_write_result = None
 
-    assert self._lib.destroy_thrift_ffi_client(self._handle).tag == self._lib.SuccessfullyFreed
+    with self._ffi.new('InternedObjectDestructionResult*') as result:
+      self._lib.destroy_user_client(self._handle, result)
+      result = result[0]
+      assert result == self._lib.Succeeded
+    self._handle = None
+
     self._is_open = False
 
   def _maybe_expand_chunk(self, sz):
@@ -144,7 +180,7 @@ class FFIMonocastTransport(TTransportBase):
     self._mutable_chunk.len = sz
 
     result = self._cur_read_result
-    self._lib.read_buffer_handle(self._handle, chunk, result)
+    self._lib.receive_topic_message(self._handle, chunk, result)
     assert result.tag == self._lib.Read
     assert result.read <= sz
 
@@ -159,7 +195,7 @@ class FFIMonocastTransport(TTransportBase):
     self._mutable_chunk.len = len(buf)
 
     result = self._cur_write_result
-    self._lib.write_buffer_handle(self._handle, chunk, result)
+    self._lib.send_topic_message(self._handle, chunk, result)
     assert result.tag == self._lib.Written
 
     return result.written
@@ -180,19 +216,105 @@ def main() -> None:
 
   ffi, lib = bootstrap_thrift_ffi()
 
-  # transport = FFIMonocastTransport(ffi, lib, 300, 300)
-  # protocol = TBinaryProtocol(transport)
-  # client = TerminalWrapper.Client(protocol)
+  capacity = 3000
+
+  with ffi.new('UserKindRequest*') as request,\
+       ffi.new('InternedObjectCreationResult*') as result:
+    lib.create_user_kind(request, result)
+    result = result[0]
+    assert result.tag == lib.Created
+    client_user_kind = result.created.tup_0
+
+  with ffi.new('UserKindRequest*') as request,\
+       ffi.new('InternedObjectCreationResult*') as result:
+    lib.create_user_kind(request, result)
+    result = result[0]
+    assert result.tag == lib.Created
+    server_user_kind = result.created.tup_0
 
   with ffi.new('UserRequest*') as request,\
        ffi.new('InternedObjectCreationResult*') as result:
+    request = dict(
+      kind=client_user_kind,
+    )
     lib.create_user(request, result)
     result = result[0]
     assert result.tag == lib.Created
-    user_handle = result.created.tup_0
-  print(f'user_handle = {user_handle}')
+    client_user = result.created.tup_0
+
+  with ffi.new('UserRequest*') as request,\
+       ffi.new('InternedObjectCreationResult*') as result:
+    request = dict(
+      kind=server_user_kind,
+    )
+    lib.create_user(request, result)
+    result = result[0]
+    assert result.tag == lib.Created
+    server_user = result.created.tup_0
+
+  with ffi.new('TopicRequest*') as request,\
+       ffi.new('InternedObjectCreationResult*') as result:
+    lib.create_topic(request, result)
+    result = result[0]
+    assert result.tag == lib.Created
+    topic = result.created.tup_0
+
+  # Taken from: https://thrift.apache.org/tutorial/py.
+  handler = StreamingInterfaceHandler()
+  processor = TerminalWrapper.Processor()
+  server_transport = FFIMonocastTransport(ffi, lib, server_user, topic, client_user_kind,
+                                          capacity, capacity)
+  tfactory = TTransportFactoryBase()
+  pfactory = TSimpleJSONProtocolFactory()
+  server = TSimpleServer(processor, transport, tfactory, pfactory)
+
+
+  server_thread = Thread(target=lambda: server.serve())
+  server_thread.start()
+
+  client_transport = FFIMonocastTransport(ffi, lib, client_user, topic, server_user_kind,
+                                          capacity, capacity)
+  client_protocol = TJsonProtocol(transport)
+  client = TerminalWrapper.Client(protocol)
+
+
+  client_transport.open()
+  server_transport.open()
+
+  ret = client.beginExecution(ProcessExecutionRequest())
+  assert ret == RunId('asdf')
+  print(f'ret = {ret}')
+
+  ret = client.getNextEvent()
+  assert ret.run_id == RunId('asdf')
+  print(f'ret = {ret}')
+
+  client_transport.close()
+  server_transport.close()
+
+  server_thread.join()
 
   with ffi.new('InternedObjectDestructionResult*') as result:
-    lib.destroy_user(user_handle, result)
+    lib.destroy_user(client_user, result)
+    result = result[0]
+    assert result == lib.Succeeded
+
+  with ffi.new('InternedObjectDestructionResult*') as result:
+    lib.destroy_user(server_user, result)
+    result = result[0]
+    assert result == lib.Succeeded
+
+  with ffi.new('InternedObjectDestructionResult*') as result:
+    lib.destroy_user_kind(client_user_kind, result)
+    result = result[0]
+    assert result == lib.Succeeded
+
+  with ffi.new('InternedObjectDestructionResult*') as result:
+    lib.destroy_user_kind(server_user_kind, result)
+    result = result[0]
+    assert result == lib.Succeeded
+
+  with ffi.new('InternedObjectDestructionResult*') as result:
+    lib.destroy_topic(topic_handle, result)
     result = result[0]
     assert result == lib.Succeeded

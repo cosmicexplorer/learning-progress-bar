@@ -25,7 +25,9 @@
  * this crate's symbols *also* exported on top of whatever *other* FFI they
  * may want to have. */
 pub mod all {
-  pub use super::{interning::*, lifecycle::*, topic::*, user::*, user_client::*, util::*};
+  pub use super::{
+    interning::*, lifecycle::*, topic::*, user::*, user_client::*, user_kind::*, util::*,
+  };
 }
 
 pub mod util;
@@ -35,8 +37,57 @@ pub mod interning;
 
 pub mod lifecycle;
 
-pub mod user {
+pub mod user_kind {
   use super::{interning::*, lifecycle::*};
+  use lazy_static::lazy_static;
+  use parking_lot::RwLock;
+  use std::sync::Arc;
+
+  #[derive(Debug)]
+  pub struct UserKind;
+
+  new_handle![UserKindHandle => USER_KIND_HANDLES: Arc<RwLock<Interns<UserKind>>>];
+
+  #[repr(C)]
+  #[derive(Debug)]
+  pub struct UserKindRequest;
+
+  impl ExternallyManagedLifecycle<UserKind, UserKindHandle, InternError> for UserKindRequest {
+    fn make_instance(&self) -> Result<UserKind, InternError> { Ok(UserKind) }
+
+    fn register_handle(_handle: &UserKindHandle) -> Result<(), InternError> { Ok(()) }
+
+    fn deregister_handle(_handle: &UserKindHandle) -> Result<(), InternError> { Ok(()) }
+  }
+
+  #[no_mangle]
+  pub extern "C" fn create_user_kind(
+    request: *const UserKindRequest,
+    result: *mut InternedObjectCreationResult,
+  )
+  {
+    let request = unsafe { &*request };
+    let ret = UserKindRequest::create_handle_ffi(&request);
+    unsafe {
+      *result = ret;
+    }
+  }
+
+  #[no_mangle]
+  pub extern "C" fn destroy_user_kind(
+    key: InternKey,
+    result: *mut InternedObjectDestructionResult,
+  )
+  {
+    let ret = UserKindRequest::destroy_handle_ffi(key);
+    unsafe {
+      *result = ret;
+    }
+  }
+}
+
+pub mod user {
+  use super::{interning::*, lifecycle::*, user_kind::*};
 
   /* FIXME: The new_handle![] macro doesn't create a new scope to locally
    * import everything it uses to define the '*Handle' structs! This is super
@@ -46,8 +97,10 @@ pub mod user {
 
   use std::sync::Arc;
 
-  #[derive(Debug, Eq, PartialEq, Hash)]
-  pub struct User;
+  #[derive(Debug)]
+  pub struct User {
+    pub kind: UserKindHandle,
+  }
 
   /* FIXME: The '*Handle' types created by new_handle![] don't appear to be
    * exported by cbindgen!! This requires methods like send_topic_message()
@@ -56,10 +109,21 @@ pub mod user {
 
   #[repr(C)]
   #[derive(Debug)]
-  pub struct UserRequest;
+  pub struct UserRequest {
+    kind: InternKey,
+  }
+
+  #[cfg(test)]
+  impl UserRequest {
+    pub fn new(kind: InternKey) -> Self { UserRequest { kind } }
+  }
 
   impl ExternallyManagedLifecycle<User, UserHandle, InternError> for UserRequest {
-    fn make_instance(&self) -> Result<User, InternError> { Ok(User) }
+    fn make_instance(&self) -> Result<User, InternError> {
+      Ok(User {
+        kind: UserKindHandle::from_key(self.kind),
+      })
+    }
 
     fn register_handle(_handle: &UserHandle) -> Result<(), InternError> { Ok(()) }
 
@@ -140,7 +204,7 @@ pub mod topic {
 }
 
 pub mod user_client {
-  use super::{interning::*, lifecycle::*, topic::*, user::*, util::*};
+  use super::{interning::*, lifecycle::*, topic::*, user::*, user_kind::*, util::*};
 
   /* FIXME: The new_handle![] macro doesn't create a new scope to locally
    * import everything it uses to define the '*Handle' structs! This is super
@@ -155,10 +219,12 @@ pub mod user_client {
     sync::Arc,
   };
 
+  #[derive(Debug)]
   pub struct UserClient {
     pub user: UserHandle,
     pub topic: TopicHandle,
     pub channel: TBufferChannel,
+    pub target_kind: UserKindHandle,
   }
 
   impl UserClient {
@@ -167,6 +233,7 @@ pub mod user_client {
       write_capacity: usize,
       user: UserHandle,
       topic: TopicHandle,
+      target_kind: UserKindHandle,
     ) -> UserClient
     {
       let channel = TBufferChannel::with_capacity(read_capacity, write_capacity);
@@ -174,6 +241,7 @@ pub mod user_client {
         user,
         topic,
         channel,
+        target_kind,
       }
     }
   }
@@ -187,12 +255,15 @@ pub mod user_client {
     pub write_capacity: u64,
     user_key: InternKey,
     topic_key: InternKey,
+    target_kind_key: InternKey,
   }
 
   impl UserClientRequest {
     fn user(&self) -> UserHandle { UserHandle::from_key(self.user_key) }
 
     fn topic(&self) -> TopicHandle { TopicHandle::from_key(self.topic_key) }
+
+    fn target_kind(&self) -> UserKindHandle { UserKindHandle::from_key(self.target_kind_key) }
   }
 
   #[cfg(test)]
@@ -203,6 +274,7 @@ pub mod user_client {
       write_capacity: usize,
       user: UserHandle,
       topic: TopicHandle,
+      target_kind: UserKindHandle,
     ) -> Self
     {
       UserClientRequest {
@@ -210,6 +282,7 @@ pub mod user_client {
         write_capacity: write_capacity as u64,
         user_key: user.as_key(),
         topic_key: topic.as_key(),
+        target_kind_key: target_kind.as_key(),
       }
     }
   }
@@ -227,12 +300,14 @@ pub mod user_client {
     fn make_instance(&self) -> Result<UserClient, UserClientHandleError> {
       let user = self.user();
       let topic = self.topic();
+      let target_kind = self.target_kind();
 
       Ok(UserClient::create_single_buffer_channel(
         self.read_capacity as usize,
         self.write_capacity as usize,
         user,
         topic,
+        target_kind,
       ))
     }
 
@@ -283,14 +358,26 @@ pub mod user_client {
   #[no_mangle]
   pub extern "C" fn create_user_client(
     request: *const UserClientRequest,
-  ) -> InternedObjectCreationResult {
+    result: *mut InternedObjectCreationResult,
+  )
+  {
     let request = unsafe { &*request };
-    UserClientRequest::create_handle_ffi(&request)
+    let ret = UserClientRequest::create_handle_ffi(&request);
+    unsafe {
+      *result = ret;
+    }
   }
 
   #[no_mangle]
-  pub extern "C" fn destroy_user_client(key: InternKey) -> InternedObjectDestructionResult {
-    UserClientRequest::destroy_handle_ffi(key)
+  pub extern "C" fn destroy_user_client(
+    key: InternKey,
+    result: *mut InternedObjectDestructionResult,
+  )
+  {
+    let ret = UserClientRequest::destroy_handle_ffi(key);
+    unsafe {
+      *result = ret;
+    }
   }
 
   #[derive(Debug, Clone, Eq, PartialEq)]
@@ -320,13 +407,6 @@ pub mod user_client {
     pub capacity: u64,
   }
 
-  #[repr(C)]
-  #[derive(Clone, Copy)]
-  pub enum ThriftWriteResult {
-    Written(u64),
-    Failed,
-  }
-
   pub fn client_send_message(
     handle: UserClientHandle,
     chunk: &ThriftChunk,
@@ -339,9 +419,15 @@ pub mod user_client {
     let byte_slice = unsafe { std::slice::from_raw_parts(*ptr, len) };
 
     /* Get the topic, and message every other client *synchronously*! */
-    let (user, topic) = handle.extract::<(UserHandle, TopicHandle), UserClientHandleError, _>(
-      |UserClient { user, topic, .. }| Ok((*user, *topic)),
-    )?;
+    let (user, topic, target_kind) = handle
+      .extract::<(UserHandle, TopicHandle, UserKindHandle), UserClientHandleError, _>(
+        |UserClient {
+           user,
+           topic,
+           target_kind,
+           ..
+         }| Ok((*user, *topic, *target_kind)),
+      )?;
 
     /* Temporarily lock the topic handle to get all the other clients to message! */
     /* FIXME(PERFORMANCE): This could be cached! */
@@ -349,13 +435,17 @@ pub mod user_client {
       |Topic {
          user_client_mapping,
        }| {
-        Ok(
-          user_client_mapping
-            .iter()
-            .filter(|(other_user, _)| user != **other_user)
-            .map(|(_, other_user_client)| *other_user_client)
-            .collect(),
-        )
+        let mut clients: Vec<UserClientHandle> = vec![];
+        for (other_user, other_user_client) in user_client_mapping.iter() {
+          let other_user_kind =
+            other_user.extract::<UserKindHandle, UserClientHandleError, _>(|other_user| {
+              Ok(other_user.kind)
+            })?;
+          if *other_user != user && other_user_kind == target_kind {
+            clients.push(*other_user_client);
+          }
+        }
+        Ok(clients)
       },
     )?;
 
@@ -404,22 +494,30 @@ pub mod user_client {
     }
   }
 
+  #[repr(C)]
+  #[derive(Clone, Copy)]
+  pub enum ThriftWriteResult {
+    Written(u64),
+    Failed,
+  }
+
   #[no_mangle]
-  pub extern "C" fn send_topic_message(handle: InternKey, chunk: ThriftChunk) -> ThriftWriteResult {
-    match client_send_message(UserClientHandle::from_key(handle), &chunk) {
+  pub extern "C" fn send_topic_message(
+    handle: InternKey,
+    chunk: ThriftChunk,
+    result: *mut ThriftWriteResult,
+  )
+  {
+    let ret = match client_send_message(UserClientHandle::from_key(handle), &chunk) {
       Ok(len) => ThriftWriteResult::Written(len as u64),
       Err(e) => {
         eprintln!("send_topic_message: {:?}", e);
         ThriftWriteResult::Failed
       },
+    };
+    unsafe {
+      *result = ret;
     }
-  }
-
-  #[repr(C)]
-  #[derive(Clone, Copy)]
-  pub enum ThriftReadResult {
-    Read(u64),
-    Failed,
   }
 
   pub fn client_receive_message(
@@ -457,13 +555,21 @@ pub mod user_client {
     })
   }
 
+  #[repr(C)]
+  #[derive(Clone, Copy)]
+  pub enum ThriftReadResult {
+    Read(u64),
+    Failed,
+  }
+
   #[no_mangle]
   pub extern "C" fn receive_topic_message(
     handle: InternKey,
     mut chunk: ThriftChunk,
-  ) -> ThriftReadResult
+    result: *mut ThriftReadResult,
+  )
   {
-    match client_receive_message(UserClientHandle::from_key(handle), &mut chunk) {
+    let ret = match client_receive_message(UserClientHandle::from_key(handle), &mut chunk) {
       Ok(len) => {
         chunk.len = len as u64;
         ThriftReadResult::Read(chunk.len)
@@ -472,6 +578,9 @@ pub mod user_client {
         eprintln!("receive_topic_message: {:?}", e);
         ThriftReadResult::Failed
       },
+    };
+    unsafe {
+      *result = ret;
     }
   }
 }
@@ -499,10 +608,11 @@ mod tests {
 
     #[test]
     fn invalid_gc_sequence() {
-      let user = extract_handle(UserRequest);
+      let kind = extract_handle(UserKindRequest);
+      let user = extract_handle(UserRequest::new(kind.as_key()));
       let topic = extract_handle(TopicRequest);
 
-      let handle = extract_handle(UserClientRequest::new(0, 0, user, topic));
+      let handle = extract_handle(UserClientRequest::new(0, 0, user, topic, kind));
 
       /* Destroy the user and topic. The user client handle should fail to
        * deregister. */
@@ -524,15 +634,18 @@ mod tests {
     fn create_new_user_with_client_for_topic(
       capacity: usize,
       topic: TopicHandle,
+      kind: UserKindHandle,
       message: &[u8],
     ) -> (UserHandle, UserClientHandle, ThriftChunk)
     {
       assert!(capacity >= message.len());
 
       /* Create new user! */
-      let user = extract_handle(UserRequest);
+      let user = extract_handle(UserRequest::new(kind.as_key()));
       /* Connect the new user to the same topic! */
-      let user_client = extract_handle(UserClientRequest::new(capacity, capacity, user, topic));
+      let user_client = extract_handle(UserClientRequest::new(
+        capacity, capacity, user, topic, kind,
+      ));
 
       let chunk = {
         let mut copied: Vec<u8> = message.iter().cloned().collect();
@@ -605,16 +718,18 @@ mod tests {
     fn write_then_read() -> Result<(), ThriftTransportError> {
       let capacity: usize = 400;
 
+      let kind = extract_handle(UserKindRequest);
+
       let topic = extract_handle(TopicRequest);
 
       let message1 = "hello! this is a test!".as_bytes();
       let (user1, user_client1, mut chunk1) =
-        create_new_user_with_client_for_topic(capacity, topic, &message1);
+        create_new_user_with_client_for_topic(capacity, topic, kind, &message1);
 
       /* NB: Using the same topic!! */
       let message2 = "hello! also a test!".as_bytes();
       let (user2, user_client2, mut chunk2) =
-        create_new_user_with_client_for_topic(capacity, topic, &message2);
+        create_new_user_with_client_for_topic(capacity, topic, kind, &message2);
 
       let written1 = client_send_message(user_client1, &chunk1)?;
       assert_eq!(written1, chunk1.len as usize);
@@ -622,8 +737,8 @@ mod tests {
       let written2 = client_send_message(user_client2, &chunk2)?;
       assert_eq!(written2, chunk2.len as usize);
 
-      /* Zero out the original message so we can ensure that it is read back in full from the thrift
-       * transport. */
+      /* Zero out the original message so we can ensure that it is read back in
+       * full from the thrift transport. */
       zero_out_thrift_chunk(&mut chunk1, &message1);
       zero_out_thrift_chunk(&mut chunk2, &message2);
 
