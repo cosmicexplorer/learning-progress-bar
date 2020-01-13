@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,9 @@ import target.debug
 from terminal.streaming_interface import TerminalWrapper
 from terminal.streaming_interface.constants import *
 from terminal.streaming_interface.ttypes import *
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_resource_string(module: ModuleType, rel_path: Path) -> bytes:
@@ -62,6 +66,47 @@ def bootstrap_thrift_ffi() -> FFI:
   return ffi, lib
 
 
+class HackedSimpleServer(TSimpleServer):
+    """Simple single-threaded server that just pumps around one transport."""
+
+    def __init__(self, *args, **kwargs):
+      super().__init__(*args, **kwargs)
+      self._is_accepting: bool = False
+
+    # FIXME: The `is_accepting` logic has some super spooky action at a distance!
+    def is_accepting(self) -> bool:
+      return self._is_accepting
+
+    def serve(self):
+      self.serverTransport.listen()
+      while True:
+        self._is_accepting = True
+        client = self.serverTransport.accept()
+        if not client:
+          continue
+
+        itrans = self.inputTransportFactory.getTransport(client)
+        iprot = self.inputProtocolFactory.getProtocol(itrans)
+
+        otrans = self.outputTransportFactory.getTransport(client)
+        oprot = self.outputProtocolFactory.getProtocol(otrans)
+
+        try:
+          while True:
+            self.processor.process(iprot, oprot)
+        except TTransport.TTransportException:
+          pass
+        except Exception as x:
+          logger.exception(x)
+
+        self._is_accepting = False
+
+        # import pdb; pdb.set_trace()
+        itrans.close()
+        if otrans:
+          otrans.close()
+
+
 class StreamingInterfaceHandler:
   def beginExecution(self, exe_req: ProcessExecutionRequest) -> RunId:
     return RunId('asdf')
@@ -80,9 +125,10 @@ class FFIMulticastTransport(TTransportBase):
   class ServerTransportFactory(TServerTransportBase):
     """Pass on constructor args to an underlying transport, created when .accept() is called!"""
 
-    def __init__(self, ffi, lib, user, target_user_kind, topic, *args, **kwargs) -> None:
+    def __init__(self, ffi, lib, cvar, user, target_user_kind, topic, *args, **kwargs) -> None:
       self._ffi = ffi
       self._lib = lib
+      self._cvar = cvar
 
       self._user = user
       self._topic = topic
@@ -95,6 +141,7 @@ class FFIMulticastTransport(TTransportBase):
       pass
 
     def accept(self):
+      # import pdb; pdb.set_trace()
       assert self._topic is not None
       # raise Exception(f'args: {self._args}, kwargs: {self._kwargs}')
       ret = FFIMulticastTransport(
@@ -106,6 +153,7 @@ class FFIMulticastTransport(TTransportBase):
         *self._args,
         **self._kwargs)
       ret.open()
+      self._cvar.notify()
       return ret
 
     def close(self) -> None:
@@ -122,6 +170,7 @@ class FFIMulticastTransport(TTransportBase):
     self._write_capacity = write_capacity
     self._is_open = False
 
+    self._chunk_ptr = None
     self._mutable_chunk = None
     self._max_cap = max(self._read_capacity, self._write_capacity)
 
@@ -149,9 +198,10 @@ class FFIMulticastTransport(TTransportBase):
       assert result.tag == self._lib.Created
       self._handle[0] = result.created.tup_0
 
+    self._chunk_ptr = self._ffi.new('char[]', self._max_cap)
     self._mutable_chunk = self._ffi.new('ThriftChunk*')
     self._mutable_chunk[0] = dict(
-      ptr=self._ffi.new('char[]', self._max_cap),
+      ptr=self._chunk_ptr,
       len=0,
       capacity=self._max_cap,
     )
@@ -164,7 +214,8 @@ class FFIMulticastTransport(TTransportBase):
   def close(self):
     assert self._is_open
 
-    self._ffi.release(self._mutable_chunk.ptr)
+    self._ffi.release(self._chunk_ptr)
+    self._chunk_ptr = None
     self._ffi.release(self._mutable_chunk)
     self._mutable_chunk = None
 
@@ -188,9 +239,10 @@ class FFIMulticastTransport(TTransportBase):
 
     self._max_cap = sz
 
-    self._ffi.release(self._mutable_chunk.ptr)
+    self._ffi.release(self._chunk_ptr)
+    self._chunk_ptr = self._ffi.new('char[]', self._max_cap)
     self._mutable_chunk[0] = dict(
-      ptr=self._ffi.new('char[]', self._max_cap),
+      ptr=self._chunk_ptr,
       len=0,
       capacity=self._max_cap,
     )
@@ -284,12 +336,16 @@ def main() -> None:
     assert result.tag == lib.Created
     topic[0] = result.created.tup_0
 
+  lock = threading.Lock()
+  cvar = threading.Condition(lock)
+
   # Taken from: https://thrift.apache.org/tutorial/py.
   handler = StreamingInterfaceHandler()
   processor = TerminalWrapper.Processor(handler)
   server_transport_factory = FFIMulticastTransport.ServerTransportFactory(
     ffi=ffi,
     lib=lib,
+    cvar=cvar,
     user=server_user[0],
     target_user_kind=client_user_kind[0],
     topic=topic[0],
@@ -301,7 +357,7 @@ def main() -> None:
   # C-ABI FFI-like performance (at first!).
   tfactory = TTransportFactoryBase()
   pfactory = TBinaryProtocolAcceleratedFactory()
-  server = TSimpleServer(processor, server_transport_factory, tfactory, pfactory)
+  server = HackedSimpleServer(processor, server_transport_factory, tfactory, pfactory)
 
   client_transport = FFIMulticastTransport(
     ffi, lib, client_user[0], topic[0], server_user_kind[0],
@@ -311,8 +367,18 @@ def main() -> None:
   client_protocol = TBinaryProtocolAccelerated(client_transport)
   client = TerminalWrapper.Client(client_protocol)
 
-  server_thread = threading.Thread(target=lambda: server.serve())
+  def server_fun():
+    with cvar:
+      server.serve()
+
+  server_thread = threading.Thread(target=server_fun)
   server_thread.start()
+
+  # Wait for the server thread (in FFIMulticastTransport.ServerTransportFactory.accept()) to notify
+  # that that have opened up their server transport.
+  with cvar:
+    while not server.is_accepting():
+      cvar.wait()
 
   ret = client.beginExecution(ProcessExecutionRequest())
   assert ret == RunId('asdf')
