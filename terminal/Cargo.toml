@@ -8,9 +8,9 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [features]
-default = []
+default = ["thrift-ffi", "cbindgen-cffi-compat"]
 cffi-compatible = ["thrift-ffi/cffi-compatible"]
-pants-injected = ["thrift-ffi", "cbindgen-cffi-compat"]
+pants-injected = []
 
 [dependencies]
 regex = "1"

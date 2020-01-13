@@ -40,9 +40,22 @@ fn main() -> Result<(), BindingsCreationError> {
   #[cfg(not(feature = "cffi-compatible"))]
   let env = Environment::Normal;
 
+  #[cfg(not(feature = "pants-injected"))]
+  fs::write("src/streaming_interface.rs", "")?;
   #[cfg(feature = "pants-injected")]
-  fs::copy("streaming_interface.rs", "src/streaming_interface.rs")
-    .map_err(|e| format!("thrift copy: {:?}", e))?;
+  {
+    use std::io;
+    fs::write("src/streaming_interface.rs", "#![allow(deprecated)]\n")?;
+    let mut thrift_output_file = fs::OpenOptions::new()
+      .append(true)
+      .open("src/streaming_interface.rs")?;
+    let mut injected_thrift_file = fs::OpenOptions::new()
+      .read(true)
+      .open("streaming_interface.rs")?;
+    io::copy(&mut injected_thrift_file, &mut thrift_output_file)?;
+    Ok(())
+  }
+  .map_err(|e: BindingsCreationError| format!("thrift copy: {:?}", e))?;
 
   if !Path::new("generated_headers").exists() {
     fs::create_dir("generated_headers").map_err(|e| format!("generated_headers dir: {:?}", e))?;

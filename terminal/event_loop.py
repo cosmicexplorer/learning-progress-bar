@@ -1,15 +1,15 @@
 import asyncio
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Thread
 from types import ModuleType
 from typing import Any, AsyncGenerator, Optional, Union, cast
 
 from cffi import FFI
 from pants.util.contextutil import temporary_file
 from pkg_resources import DefaultProvider, ZipProvider, get_provider
-from thrift.protocol.TJsonProtocol import TJsonProtocol, TSimpleJSONProtocolFactory
-from thrift.transport.TTransport import TTransportBase, TTransportFactoryBase
+from thrift.protocol.TBinaryProtocol import TBinaryProtocolAccelerated, TBinaryProtocolAcceleratedFactory
+from thrift.transport.TTransport import TTransportBase, TTransportFactoryBase, TServerTransportBase
 from thrift.server.TServer import TSimpleServer
 
 import generated_headers
@@ -63,21 +63,10 @@ def bootstrap_thrift_ffi() -> FFI:
 
 
 class StreamingInterfaceHandler:
-
-  def __init__(self):
-    self._die: bool = False
-
-  def set_die(self):
-    self._die = True
-
   def beginExecution(self, exe_req: ProcessExecutionRequest) -> RunId:
-    if self._die:
-      raise Exception(f'dying! exe req was: {exe_req}')
     return RunId('asdf')
 
   def getNextEvent(self) -> SubprocessEvent:
-    if self._die:
-      raise Exception(f'dying! no next event!')
     return SubprocessEvent(
       type=EventType.START,
       timing=TimingWithinRun(0),
@@ -86,7 +75,41 @@ class StreamingInterfaceHandler:
     )
 
 
-class FFIMonocastTransport(TTransportBase):
+class FFIMulticastTransport(TTransportBase):
+
+  class ServerTransportFactory(TServerTransportBase):
+    """Pass on constructor args to an underlying transport, created when .accept() is called!"""
+
+    def __init__(self, ffi, lib, user, target_user_kind, topic, *args, **kwargs) -> None:
+      self._ffi = ffi
+      self._lib = lib
+
+      self._user = user
+      self._topic = topic
+      self._target_user_kind = target_user_kind
+
+      self._args = args
+      self._kwargs = kwargs
+
+    def listen(self) -> None:
+      pass
+
+    def accept(self):
+      assert self._topic is not None
+      # raise Exception(f'args: {self._args}, kwargs: {self._kwargs}')
+      ret = FFIMulticastTransport(
+        ffi=self._ffi,
+        lib=self._lib,
+        user=self._user,
+        topic=self._topic,
+        target_user_kind=self._target_user_kind,
+        *self._args,
+        **self._kwargs)
+      ret.open()
+      return ret
+
+    def close(self) -> None:
+      pass
 
   def __init__(self, ffi, lib, user, topic, target_user_kind, read_capacity, write_capacity):
     self._handle = None
@@ -111,22 +134,23 @@ class FFIMonocastTransport(TTransportBase):
   def open(self):
     assert not self._is_open
 
+    self._handle = self._ffi.new('InternKey*')
+
     with self._ffi.new('UserClientRequest*') as request,\
          self._ffi.new('InternedObjectCreationResult*') as result:
-      request = dict(
+      request[0] = dict(
         read_capacity=self._read_capacity,
         write_capacity=self._write_capacity,
         user_key=self._user,
         topic_key=self._topic,
-        target_kind=self._target_user_kind,
+        target_kind_key=self._target_user_kind,
       )
       self._lib.create_user_client(request, result)
-      result = result[0]
       assert result.tag == self._lib.Created
-      self._handle = result.created.tup_0
+      self._handle[0] = result.created.tup_0
 
     self._mutable_chunk = self._ffi.new('ThriftChunk*')
-    self._mutable_chunk = dict(
+    self._mutable_chunk[0] = dict(
       ptr=self._ffi.new('char[]', self._max_cap),
       len=0,
       capacity=self._max_cap,
@@ -138,8 +162,7 @@ class FFIMonocastTransport(TTransportBase):
     self._is_open = True
 
   def close(self):
-    if not self._is_open:
-      return
+    assert self._is_open
 
     self._ffi.release(self._mutable_chunk.ptr)
     self._ffi.release(self._mutable_chunk)
@@ -152,9 +175,9 @@ class FFIMonocastTransport(TTransportBase):
     self._cur_write_result = None
 
     with self._ffi.new('InternedObjectDestructionResult*') as result:
-      self._lib.destroy_user_client(self._handle, result)
-      result = result[0]
+      self._lib.destroy_user_client(self._handle[0], result)
       assert result == self._lib.Succeeded
+    self._ffi.release(self._handle)
     self._handle = None
 
     self._is_open = False
@@ -166,7 +189,7 @@ class FFIMonocastTransport(TTransportBase):
     self._max_cap = sz
 
     self._ffi.release(self._mutable_chunk.ptr)
-    self._mutable_chunk = dict(
+    self._mutable_chunk[0] = dict(
       ptr=self._ffi.new('char[]', self._max_cap),
       len=0,
       capacity=self._max_cap,
@@ -180,11 +203,12 @@ class FFIMonocastTransport(TTransportBase):
     self._mutable_chunk.len = sz
 
     result = self._cur_read_result
-    self._lib.receive_topic_message(self._handle, chunk, result)
+    self._lib.receive_topic_message(self._handle[0], self._mutable_chunk[0], result)
     assert result.tag == self._lib.Read
-    assert result.read <= sz
+    read = result.read.tup_0
+    assert read <= sz
 
-    return self._ffi.buffer(self._mutable_chunk.ptr, result.read)[:]
+    return self._ffi.buffer(self._mutable_chunk.ptr, read)[:]
 
   def write(self, buf):
     assert self._is_open
@@ -195,12 +219,13 @@ class FFIMonocastTransport(TTransportBase):
     self._mutable_chunk.len = len(buf)
 
     result = self._cur_write_result
-    self._lib.send_topic_message(self._handle, chunk, result)
+    self._lib.send_topic_message(self._handle[0], self._mutable_chunk[0], result)
     assert result.tag == self._lib.Written
 
     return result.written
 
   def flush(self):
+    assert self._is_open
     # An in-memory buffer has no flush step -- see the docs for the rust TBufferChannel (which this
     # uses) flush() at
     # https://github.com/apache/thrift/blob/master/lib/rs/src/transport/mem.rs#L183-L185!
@@ -218,68 +243,76 @@ def main() -> None:
 
   capacity = 3000
 
+  client_user_kind = ffi.new('InternKey*')
   with ffi.new('UserKindRequest*') as request,\
        ffi.new('InternedObjectCreationResult*') as result:
     lib.create_user_kind(request, result)
-    result = result[0]
     assert result.tag == lib.Created
-    client_user_kind = result.created.tup_0
+    client_user_kind[0] = result.created.tup_0
 
+  server_user_kind = ffi.new('InternKey*')
   with ffi.new('UserKindRequest*') as request,\
        ffi.new('InternedObjectCreationResult*') as result:
     lib.create_user_kind(request, result)
-    result = result[0]
     assert result.tag == lib.Created
-    server_user_kind = result.created.tup_0
+    server_user_kind[0] = result.created.tup_0
 
+  client_user = ffi.new('InternKey*')
   with ffi.new('UserRequest*') as request,\
        ffi.new('InternedObjectCreationResult*') as result:
-    request = dict(
-      kind=client_user_kind,
+    request[0] = dict(
+      kind=client_user_kind[0],
     )
     lib.create_user(request, result)
-    result = result[0]
     assert result.tag == lib.Created
-    client_user = result.created.tup_0
+    client_user[0] = result.created.tup_0
 
+  server_user = ffi.new('InternKey*')
   with ffi.new('UserRequest*') as request,\
        ffi.new('InternedObjectCreationResult*') as result:
-    request = dict(
-      kind=server_user_kind,
+    request[0] = dict(
+      kind=server_user_kind[0],
     )
     lib.create_user(request, result)
-    result = result[0]
     assert result.tag == lib.Created
-    server_user = result.created.tup_0
+    server_user[0] = result.created.tup_0
 
+  topic = ffi.new('InternKey*')
   with ffi.new('TopicRequest*') as request,\
        ffi.new('InternedObjectCreationResult*') as result:
     lib.create_topic(request, result)
-    result = result[0]
     assert result.tag == lib.Created
-    topic = result.created.tup_0
+    topic[0] = result.created.tup_0
 
   # Taken from: https://thrift.apache.org/tutorial/py.
   handler = StreamingInterfaceHandler()
-  processor = TerminalWrapper.Processor()
-  server_transport = FFIMonocastTransport(ffi, lib, server_user, topic, client_user_kind,
-                                          capacity, capacity)
+  processor = TerminalWrapper.Processor(handler)
+  server_transport_factory = FFIMulticastTransport.ServerTransportFactory(
+    ffi=ffi,
+    lib=lib,
+    user=server_user[0],
+    target_user_kind=client_user_kind[0],
+    topic=topic[0],
+    read_capacity=capacity,
+    write_capacity=capacity)
+
+  # This "Base" class merely returns any transport it's provided. Since we are using in-memory
+  # buffers, it seems like a good idea for now to avoid further buffering to get closer to native
+  # C-ABI FFI-like performance (at first!).
   tfactory = TTransportFactoryBase()
-  pfactory = TSimpleJSONProtocolFactory()
-  server = TSimpleServer(processor, transport, tfactory, pfactory)
+  pfactory = TBinaryProtocolAcceleratedFactory()
+  server = TSimpleServer(processor, server_transport_factory, tfactory, pfactory)
 
-
-  server_thread = Thread(target=lambda: server.serve())
-  server_thread.start()
-
-  client_transport = FFIMonocastTransport(ffi, lib, client_user, topic, server_user_kind,
-                                          capacity, capacity)
-  client_protocol = TJsonProtocol(transport)
-  client = TerminalWrapper.Client(protocol)
-
-
+  client_transport = FFIMulticastTransport(
+    ffi, lib, client_user[0], topic[0], server_user_kind[0],
+    capacity, capacity)
   client_transport.open()
-  server_transport.open()
+
+  client_protocol = TBinaryProtocolAccelerated(client_transport)
+  client = TerminalWrapper.Client(client_protocol)
+
+  server_thread = threading.Thread(target=lambda: server.serve())
+  server_thread.start()
 
   ret = client.beginExecution(ProcessExecutionRequest())
   assert ret == RunId('asdf')
@@ -290,31 +323,30 @@ def main() -> None:
   print(f'ret = {ret}')
 
   client_transport.close()
-  server_transport.close()
 
   server_thread.join()
 
   with ffi.new('InternedObjectDestructionResult*') as result:
-    lib.destroy_user(client_user, result)
-    result = result[0]
+    lib.destroy_topic(topic[0], result)
     assert result == lib.Succeeded
+  ffi.release(topic)
 
   with ffi.new('InternedObjectDestructionResult*') as result:
-    lib.destroy_user(server_user, result)
-    result = result[0]
+    lib.destroy_user(client_user[0], result)
     assert result == lib.Succeeded
+  ffi.release(client_user)
 
   with ffi.new('InternedObjectDestructionResult*') as result:
-    lib.destroy_user_kind(client_user_kind, result)
-    result = result[0]
+    lib.destroy_user(server_user[0], result)
     assert result == lib.Succeeded
+  ffi.release(server_user)
 
   with ffi.new('InternedObjectDestructionResult*') as result:
-    lib.destroy_user_kind(server_user_kind, result)
-    result = result[0]
+    lib.destroy_user_kind(client_user_kind[0], result)
     assert result == lib.Succeeded
+  ffi.release(client_user_kind)
 
   with ffi.new('InternedObjectDestructionResult*') as result:
-    lib.destroy_topic(topic_handle, result)
-    result = result[0]
+    lib.destroy_user_kind(server_user_kind[0], result)
     assert result == lib.Succeeded
+  ffi.release(server_user_kind)

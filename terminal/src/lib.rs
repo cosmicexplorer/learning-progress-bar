@@ -29,7 +29,6 @@
 // other unsafeness.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-#[cfg(feature = "pants-injected")]
 pub mod streaming_interface;
 /* use streaming_interface::*; */
 

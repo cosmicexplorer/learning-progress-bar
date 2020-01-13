@@ -115,6 +115,7 @@ pub mod user {
 
   #[cfg(test)]
   impl UserRequest {
+    #[allow(clippy::new_without_default)]
     pub fn new(kind: InternKey) -> Self { UserRequest { kind } }
   }
 
@@ -192,14 +193,24 @@ pub mod topic {
   }
 
   #[no_mangle]
-  pub extern "C" fn create_topic(request: *const TopicRequest) -> InternedObjectCreationResult {
+  pub extern "C" fn create_topic(
+    request: *const TopicRequest,
+    result: *mut InternedObjectCreationResult,
+  )
+  {
     let request = unsafe { &*request };
-    TopicRequest::create_handle_ffi(&request)
+    let ret = TopicRequest::create_handle_ffi(&request);
+    unsafe {
+      *result = ret;
+    }
   }
 
   #[no_mangle]
-  pub extern "C" fn destroy_topic(key: InternKey) -> InternedObjectDestructionResult {
-    TopicRequest::destroy_handle_ffi(key)
+  pub extern "C" fn destroy_topic(key: InternKey, result: *mut InternedObjectDestructionResult) {
+    let ret = TopicRequest::destroy_handle_ffi(key);
+    unsafe {
+      *result = ret;
+    }
   }
 }
 
@@ -298,16 +309,12 @@ pub mod user_client {
     for UserClientRequest
   {
     fn make_instance(&self) -> Result<UserClient, UserClientHandleError> {
-      let user = self.user();
-      let topic = self.topic();
-      let target_kind = self.target_kind();
-
       Ok(UserClient::create_single_buffer_channel(
         self.read_capacity as usize,
         self.write_capacity as usize,
-        user,
-        topic,
-        target_kind,
+        user: self.user(),
+        topic: self.topic(),
+        target_kind: self.target_kind(),
       ))
     }
 
@@ -317,14 +324,14 @@ pub mod user_client {
           |UserClient { user, topic, .. }| Ok((*user, *topic)),
         )?;
 
-      let topic_str = format!("{:?}", topic);
+      let topic2 = topic.clone();
       topic.extract_mut(&mut move |Topic {
                                      user_client_mapping,
                                    }| {
         if let Some(user_client) = user_client_mapping.get(&user) {
           Err(UserClientHandleError(format!(
             "topic {:?} already contained a client {:?} for user {:?}",
-            topic_str, user_client, &user
+            topic2, user_client, &user
           )))
         } else {
           user_client_mapping.insert(user, *handle);
