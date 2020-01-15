@@ -1,6 +1,6 @@
 use parking_lot::RwLock;
 
-use std::{collections::HashMap, convert::From, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InternError(String);
@@ -22,7 +22,13 @@ pub trait Interned<T> {
     Ok(Self::interns().write().garbage_collect(self.as_key())?)
   }
 
-  fn extract<ReturnType, E: From<InternError>+Debug, F: Fn(&T) -> Result<ReturnType, E>>(
+  fn get<ReturnType, F: Fn(&T) -> ReturnType>(&self, f: F) -> Result<ReturnType, InternError> {
+    let this_ref = self.dereference()?;
+    let this_lock = this_ref.read();
+    Ok(f(&*this_lock))
+  }
+
+  fn extract<ReturnType, E: From<InternError>, F: Fn(&T) -> Result<ReturnType, E>>(
     &self,
     f: F,
   ) -> Result<ReturnType, E>
@@ -32,13 +38,9 @@ pub trait Interned<T> {
     f(&*this_lock)
   }
 
-  fn extract_mut<
-    ReturnType,
-    E: From<InternError>+Debug,
-    F: FnMut(&mut T) -> Result<ReturnType, E>,
-  >(
+  fn extract_mut<ReturnType, E: From<InternError>, F: FnMut(&mut T) -> Result<ReturnType, E>>(
     &mut self,
-    f: &mut F,
+    mut f: F,
   ) -> Result<ReturnType, E>
   {
     let this_ref = self.dereference()?;
@@ -110,6 +112,8 @@ impl<T> Interns<T> {
 #[macro_export]
 macro_rules! new_handle {
   ($name:ident => $interns_name:ident : Arc < RwLock < Interns < $into:ty >> >) => {
+    use lazy_static::lazy_static;
+
     #[repr(C)]
     #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
     pub struct $name {
@@ -117,7 +121,8 @@ macro_rules! new_handle {
     }
 
     lazy_static! {
-      static ref $interns_name: Arc<RwLock<Interns<$into>>> = Arc::new(RwLock::new(Interns::new()));
+      static ref $interns_name: std::sync::Arc<parking_lot::RwLock<Interns<$into>>> =
+        std::sync::Arc::new(parking_lot::RwLock::new(Interns::new()));
     }
 
     impl Interned<$into> for $name {
@@ -125,7 +130,9 @@ macro_rules! new_handle {
 
       fn from_key(key: InternKey) -> Self { $name { key } }
 
-      fn interns() -> Arc<RwLock<Interns<$into>>> { Arc::clone(&$interns_name) }
+      fn interns() -> std::sync::Arc<parking_lot::RwLock<Interns<$into>>> {
+        std::sync::Arc::clone(&$interns_name)
+      }
     }
 
     impl Handle<$into> for $name {}

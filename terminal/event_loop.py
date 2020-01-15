@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -170,7 +171,6 @@ class FFIMulticastTransport(TTransportBase):
     self._write_capacity = write_capacity
     self._is_open = False
 
-    self._chunk_ptr = None
     self._mutable_chunk = None
     self._max_cap = max(self._read_capacity, self._write_capacity)
 
@@ -179,6 +179,27 @@ class FFIMulticastTransport(TTransportBase):
 
   def isOpen(self):
     return self._is_open
+
+  def _zero_out_mutable_chunk(self):
+    assert self._mutable_chunk is not None
+    self._mutable_chunk[0] = dict(
+      ptr=0,
+      len=0,
+      capacity=0,
+    )
+
+  @contextmanager
+  def _with_chunk_from_buf(self, buf):
+    with self._ffi.from_buffer(buf) as data:
+      self._mutable_chunk[0] = dict(
+        ptr=data,
+        len=len(buf),
+        capacity=len(buf),
+      )
+      try:
+        yield self._mutable_chunk
+      finally:
+        self._zero_out_mutable_chunk()
 
   def open(self):
     assert not self._is_open
@@ -198,13 +219,8 @@ class FFIMulticastTransport(TTransportBase):
       assert result.tag == self._lib.Created
       self._handle[0] = result.created.tup_0
 
-    self._chunk_ptr = self._ffi.new('char[]', self._max_cap)
     self._mutable_chunk = self._ffi.new('ThriftChunk*')
-    self._mutable_chunk[0] = dict(
-      ptr=self._chunk_ptr,
-      len=0,
-      capacity=self._max_cap,
-    )
+    self._zero_out_mutable_chunk()
 
     self._cur_read_result = self._ffi.new('ThriftReadResult*')
     self._cur_write_result = self._ffi.new('ThriftWriteResult*')
@@ -255,7 +271,7 @@ class FFIMulticastTransport(TTransportBase):
     self._mutable_chunk.len = sz
 
     result = self._cur_read_result
-    self._lib.receive_topic_message(self._handle[0], self._mutable_chunk[0], result)
+    self._lib.receive_topic_messages(self._handle[0], self._mutable_chunk[0], result)
     assert result.tag == self._lib.Read
     read = result.read.tup_0
     assert read <= sz
@@ -265,14 +281,10 @@ class FFIMulticastTransport(TTransportBase):
   def write(self, buf):
     assert self._is_open
 
-    self._maybe_expand_chunk(len(buf))
-
-    self._mutable_chunk.ptr[0:len(buf)] = buf
-    self._mutable_chunk.len = len(buf)
-
-    result = self._cur_write_result
-    self._lib.send_topic_message(self._handle[0], self._mutable_chunk[0], result)
-    assert result.tag == self._lib.Written
+    with self._with_chunk_from_buf(buf) as chunk:
+      result = self._cur_write_result
+      self._lib.send_topic_messages(self._handle[0], self._mutable_chunk[0], result)
+      assert result.tag == self._lib.Written
 
     return result.written
 
@@ -336,9 +348,6 @@ def main() -> None:
     assert result.tag == lib.Created
     topic[0] = result.created.tup_0
 
-  lock = threading.Lock()
-  cvar = threading.Condition(lock)
-
   # Taken from: https://thrift.apache.org/tutorial/py.
   handler = StreamingInterfaceHandler()
   processor = TerminalWrapper.Processor(handler)
@@ -368,17 +377,10 @@ def main() -> None:
   client = TerminalWrapper.Client(client_protocol)
 
   def server_fun():
-    with cvar:
-      server.serve()
+    server.serve()
 
   server_thread = threading.Thread(target=server_fun)
   server_thread.start()
-
-  # Wait for the server thread (in FFIMulticastTransport.ServerTransportFactory.accept()) to notify
-  # that that have opened up their server transport.
-  with cvar:
-    while not server.is_accepting():
-      cvar.wait()
 
   ret = client.beginExecution(ProcessExecutionRequest())
   assert ret == RunId('asdf')

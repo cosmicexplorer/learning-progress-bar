@@ -1,5 +1,6 @@
 /* NB: Any nightly-only features go here >=]! */
 #![feature(vec_into_raw_parts)]
+#![feature(proc_macro_hygiene)]
 #![deny(warnings)]
 // Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be
 // copied and pasted across crates, but there doesn't appear to be a way to include inner attributes
@@ -37,11 +38,10 @@ pub mod interning;
 
 pub mod lifecycle;
 
+pub mod coroutines;
+
 pub mod user_kind {
   use super::{interning::*, lifecycle::*};
-  use lazy_static::lazy_static;
-  use parking_lot::RwLock;
-  use std::sync::Arc;
 
   #[derive(Debug)]
   pub struct UserKind;
@@ -89,21 +89,13 @@ pub mod user_kind {
 pub mod user {
   use super::{interning::*, lifecycle::*, user_kind::*};
 
-  /* FIXME: The new_handle![] macro doesn't create a new scope to locally
-   * import everything it uses to define the '*Handle' structs! This is super
-   * hacky, but ALSO FINE FOR NOW!!! */
-  use lazy_static::lazy_static;
-  use parking_lot::RwLock;
-
-  use std::sync::Arc;
-
   #[derive(Debug)]
   pub struct User {
     pub kind: UserKindHandle,
   }
 
   /* FIXME: The '*Handle' types created by new_handle![] don't appear to be
-   * exported by cbindgen!! This requires methods like send_topic_message()
+   * exported by cbindgen!! This requires methods like send_topic_messages()
    * to accept InternKey instances, which each method converts by itself. */
   new_handle![UserHandle => USER_HANDLES: Arc<RwLock<Interns<User>>>];
 
@@ -156,13 +148,7 @@ pub mod user {
 pub mod topic {
   use super::{interning::*, lifecycle::*, user::*, user_client::*};
 
-  /* FIXME: The new_handle![] macro doesn't create a new scope to locally
-   * import everything it uses to define the '*Handle' structs! This is super
-   * hacky, but ALSO FINE FOR NOW!!! */
-  use lazy_static::lazy_static;
-  use parking_lot::RwLock;
-
-  use std::{collections::HashMap, sync::Arc};
+  use std::collections::HashMap;
 
   #[derive(Debug)]
   pub struct Topic {
@@ -215,27 +201,32 @@ pub mod topic {
 }
 
 pub mod user_client {
-  use super::{interning::*, lifecycle::*, topic::*, user::*, user_kind::*, util::*};
+  use super::{
+    coroutines::*, interning::*, lifecycle::*, topic::*, user::*, user_kind::*, util::*,
+  };
 
-  /* FIXME: The new_handle![] macro doesn't create a new scope to locally
-   * import everything it uses to define the '*Handle' structs! This is super
-   * hacky, but ALSO FINE FOR NOW!!! */
-  use lazy_static::lazy_static;
-  use parking_lot::RwLock;
   use thrift::transport::TBufferChannel;
 
   use std::{
     convert::From,
+    fmt::Debug,
     io::{self, Read, Write},
-    sync::Arc,
   };
+
+  impl ReadWriteBufferable for TBufferChannel {
+    fn read_is_starved(&self) -> bool { self.read_is_starving() }
+
+    fn write_is_starved(&self) -> bool { self.write_is_starving() }
+
+    fn copy_write_to_read(&mut self) { self.copy_write_buffer_to_read_buffer(); }
+  }
 
   #[derive(Debug)]
   pub struct UserClient {
     pub user: UserHandle,
     pub topic: TopicHandle,
-    pub channel: TBufferChannel,
     pub target_kind: UserKindHandle,
+    pub transport_state: SynchronizedReadWriteBuffer<TBufferChannel>,
   }
 
   impl UserClient {
@@ -251,9 +242,96 @@ pub mod user_client {
       UserClient {
         user,
         topic,
-        channel,
         target_kind,
+        transport_state: SynchronizedReadWriteBuffer::new(channel),
       }
+    }
+
+    pub fn other_matching_clients(&self) -> Result<Vec<UserClientHandle>, UserClientHandleError> {
+      let UserClient {
+        user,
+        topic,
+        target_kind,
+        ..
+      } = self;
+
+      /* Temporarily (read-)lock the topic handle to get all the other clients the
+       * full message *synchronously*(!!!)! */
+      /* FIXME(PERFORMANCE): This could be cached (??!!?!???)! */
+      topic.extract(
+        |Topic {
+           user_client_mapping,
+         }| {
+          let mut matching_clients: Vec<UserClientHandle> = vec![];
+          for (other_user, other_user_client) in user_client_mapping.iter() {
+            let other_user_kind = other_user.get(|u| u.kind)?;
+            if *other_user != *user && other_user_kind == *target_kind {
+              matching_clients.push(*other_user_client);
+            }
+          }
+          Ok(matching_clients)
+        },
+      )
+    }
+  }
+
+  impl Read for UserClient {
+    ///
+    /// Load a message of the desired size into the buffer. If that fails,
+    fn read(&mut self, byte_slice: &mut [u8]) -> io::Result<usize> {
+      self.transport_state.read(byte_slice)
+    }
+  }
+
+  impl Write for UserClient {
+    ///
+    /// (1) Get the other clients from the same topic which match the currewnt
+    /// client's target kind. (2) Write the entire message to each matched
+    /// other client, waiting on its `write_cvar` to be     notified in a
+    /// separate thread of execution. (3) Try to complete all of the writes
+    /// that are possible. Return a merged error message of     all errors
+    /// writing to the matching other clients.
+    fn write(&mut self, byte_slice: &[u8]) -> io::Result<usize> {
+      /* Get clients to write to. */
+      let matching_clients = self
+        .other_matching_clients()
+        .map_err(|e| e.into_io_error())?;
+
+      /* Write the *entire* message to *all* matching clients *synchronously*!!! */
+      matching_clients
+        .into_iter()
+        .handle_split_result_sequence::<UserClientHandleError, _>(|other_handle| {
+          let written = other_handle.extract_mut::<_, UserClientHandleError, _>(
+            |&mut UserClient {
+               ref mut transport_state, ..
+             }| { transport_state.write(&byte_slice).map_err(|e| e.into()) },
+          )?;
+          assert_eq!(written, byte_slice.len());
+          Ok(())
+        })
+        .map_err(|e| UserClientHandleError::from(e).into_io_error())?;
+      Ok(byte_slice.len())
+    }
+
+    ///
+    /// This is a little crazy (I'm allowed to say that) -- we reach into all
+    /// matching other clients in the same topic, and wait on each of their
+    /// read buffer being *completely* processed.
+    fn flush(&mut self) -> io::Result<()> {
+      let matching_clients = self
+        .other_matching_clients()
+        .map_err(|e| e.into_io_error())?;
+
+      matching_clients
+        .into_iter()
+        .handle_split_result_sequence(|other_handle| {
+          other_handle.extract_mut::<_, UserClientHandleError, _>(
+            |&mut UserClient {
+               ref mut transport_state, ..
+             }| { transport_state.flush().map_err(|e| e.into()) },
+          )
+        })
+        .map_err(|e| UserClientHandleError(e).into_io_error())
     }
   }
 
@@ -301,8 +379,22 @@ pub mod user_client {
   #[derive(Debug)]
   pub struct UserClientHandleError(String);
 
+  impl From<String> for UserClientHandleError {
+    fn from(e: String) -> Self { UserClientHandleError(e) }
+  }
+
   impl From<InternError> for UserClientHandleError {
     fn from(e: InternError) -> Self { UserClientHandleError(format!("{:?}", e)) }
+  }
+
+  impl From<io::Error> for UserClientHandleError {
+    fn from(e: io::Error) -> Self { UserClientHandleError(format!("{:?}", e)) }
+  }
+
+  impl UserClientHandleError {
+    pub fn into_io_error(self) -> io::Error {
+      io::Error::new(io::ErrorKind::Other, format!("{:?}", self))
+    }
   }
 
   impl ExternallyManagedLifecycle<UserClient, UserClientHandle, UserClientHandleError>
@@ -312,53 +404,51 @@ pub mod user_client {
       Ok(UserClient::create_single_buffer_channel(
         self.read_capacity as usize,
         self.write_capacity as usize,
-        user: self.user(),
-        topic: self.topic(),
-        target_kind: self.target_kind(),
+        self.user(),
+        self.topic(),
+        self.target_kind(),
       ))
     }
 
     fn register_handle(handle: &UserClientHandle) -> Result<(), UserClientHandleError> {
-      let (user, mut topic) = handle
-        .extract::<(UserHandle, TopicHandle), UserClientHandleError, _>(
-          |UserClient { user, topic, .. }| Ok((*user, *topic)),
-        )?;
+      let (user, mut topic) = handle.get(|UserClient { user, topic, .. }| (*user, *topic))?;
 
       let topic2 = topic.clone();
-      topic.extract_mut(&mut move |Topic {
-                                     user_client_mapping,
-                                   }| {
-        if let Some(user_client) = user_client_mapping.get(&user) {
-          Err(UserClientHandleError(format!(
-            "topic {:?} already contained a client {:?} for user {:?}",
-            topic2, user_client, &user
-          )))
-        } else {
-          user_client_mapping.insert(user, *handle);
-          Ok(())
-        }
-      })
+      topic.extract_mut(
+        move |Topic {
+                user_client_mapping,
+              }| {
+          if let Some(user_client) = user_client_mapping.get(&user) {
+            Err(UserClientHandleError(format!(
+              "topic {:?} already contained a client {:?} for user {:?}",
+              topic2, user_client, &user
+            )))
+          } else {
+            user_client_mapping.insert(user, *handle);
+            Ok(())
+          }
+        },
+      )
     }
 
     fn deregister_handle(handle: &UserClientHandle) -> Result<(), UserClientHandleError> {
-      let (user, mut topic) = handle
-        .extract::<(UserHandle, TopicHandle), UserClientHandleError, _>(
-          |UserClient { user, topic, .. }| Ok((*user, *topic)),
-        )?;
+      let (user, mut topic) = handle.get(|UserClient { user, topic, .. }| (*user, *topic))?;
 
       let topic2 = topic.clone();
-      topic.extract_mut(&mut move |Topic {
-                                     user_client_mapping,
-                                   }| {
-        if user_client_mapping.remove(&user).is_some() {
-          Ok(())
-        } else {
-          Err(UserClientHandleError(format!(
-            "user {:?} has no client in topic {:?}!",
-            user, topic2
-          )))
-        }
-      })
+      topic.extract_mut(
+        move |Topic {
+                user_client_mapping,
+              }| {
+          if user_client_mapping.remove(&user).is_some() {
+            Ok(())
+          } else {
+            Err(UserClientHandleError(format!(
+              "user {:?} has no client in topic {:?}!",
+              user, topic2
+            )))
+          }
+        },
+      )
     }
   }
 
@@ -414,90 +504,22 @@ pub mod user_client {
     pub capacity: u64,
   }
 
-  pub fn client_send_message(
-    handle: UserClientHandle,
-    chunk: &ThriftChunk,
-  ) -> Result<usize, ThriftTransportError>
-  {
-    /* Interpret the incoming chunk as a message to send to the other clients. */
-    let ThriftChunk { ptr, len, capacity } = chunk;
-    let len = *len as usize;
-    assert!(len <= *capacity as usize);
-    let byte_slice = unsafe { std::slice::from_raw_parts(*ptr, len) };
+  impl ThriftChunk {
+    pub unsafe fn as_slice(&self) -> &[u8] {
+      /* TODO: a macro that turns:
+       *   <xxx>![let ThriftChunk { capacity: (capacity * 2), .. } = chunk]
+       * into:
+       *   let ThriftChunk { capacity, .. } = chunk; let capacity = (capacity * 2);
+       */
+      let ThriftChunk { ptr, len, capacity } = self;
+      assert!(len <= capacity);
+      std::slice::from_raw_parts(*ptr, *len as usize)
+    }
 
-    /* Get the topic, and message every other client *synchronously*! */
-    let (user, topic, target_kind) = handle
-      .extract::<(UserHandle, TopicHandle, UserKindHandle), UserClientHandleError, _>(
-        |UserClient {
-           user,
-           topic,
-           target_kind,
-           ..
-         }| Ok((*user, *topic, *target_kind)),
-      )?;
-
-    /* Temporarily lock the topic handle to get all the other clients to message! */
-    /* FIXME(PERFORMANCE): This could be cached! */
-    let other_clients = topic.extract::<Vec<UserClientHandle>, UserClientHandleError, _>(
-      |Topic {
-         user_client_mapping,
-       }| {
-        let mut clients: Vec<UserClientHandle> = vec![];
-        for (other_user, other_user_client) in user_client_mapping.iter() {
-          let other_user_kind =
-            other_user.extract::<UserKindHandle, UserClientHandleError, _>(|other_user| {
-              Ok(other_user.kind)
-            })?;
-          if *other_user != user && other_user_kind == target_kind {
-            clients.push(*other_user_client);
-          }
-        }
-        Ok(clients)
-      },
-    )?;
-
-    /* FIXME(CONCURRENCY): what happens if a UserClientHandle is deregistered in
-     * between the creation of `other_clients` and this for loop? A spurious
-     * error?! */
-    /* TODO(PERFORMANCE): This iteration should/could all be in parallel! */
-    let (_, write_errors): (_, Vec<_>) =
-      other_clients
-        .into_iter()
-        .split_result_sequence_mut(|mut c| {
-          c.extract_mut(&mut |UserClient {
-                                channel,
-                                user: other_user,
-                                ..
-                              }| {
-            let written = channel.write(byte_slice)?;
-            assert!(written <= len);
-            /* Find all writes which succeeded, but didn't write as many bytes as we
-             * wanted to. */
-            /* FIXME: For now we convert these into errors. It's not immediately clear
-             * what the right behavior should be for the topic-based multicast model
-             * currently used here. */
-            if written < len {
-              Err(ThriftTransportError(format!(
-                "wrote fewer bytes to user {:?} on topic {:?} than expected ({:?} vs {:?})",
-                other_user, topic, written, len
-              )))
-            } else {
-              Ok(())
-            }
-          })
-        });
-
-    if write_errors.is_empty() {
-      /* If no error, return the expected number of bytes. */
-      Ok(len)
-    } else {
-      /* There are currently many reasons why writes may fail. We currently just
-       * log it and move on! */
-      use itertools::Itertools;
-      Err(ThriftTransportError(format!(
-        "errors writing:\n{:?}",
-        write_errors.into_iter().format("\n")
-      )))
+    pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
+      let ThriftChunk { ptr, len, capacity } = self;
+      assert!(len <= capacity);
+      std::slice::from_raw_parts_mut(*ptr, *len as usize)
     }
   }
 
@@ -509,57 +531,29 @@ pub mod user_client {
   }
 
   #[no_mangle]
-  pub extern "C" fn send_topic_message(
+  pub extern "C" fn send_topic_messages(
     handle: InternKey,
     chunk: ThriftChunk,
     result: *mut ThriftWriteResult,
   )
   {
-    let ret = match client_send_message(UserClientHandle::from_key(handle), &chunk) {
-      Ok(len) => ThriftWriteResult::Written(len as u64),
-      Err(e) => {
-        eprintln!("send_topic_message: {:?}", e);
-        ThriftWriteResult::Failed
-      },
-    };
+    /* Get the topic, and message every other client *synchronously*! */
+    let byte_slice: &[u8] = unsafe { chunk.as_slice() };
+
+    let mut user_client = UserClientHandle::from_key(handle);
+    let ret =
+      match user_client.extract_mut::<_, UserClientHandleError, _>(&mut |c: &mut UserClient| {
+        c.write(byte_slice).map_err(|e| e.into())
+      }) {
+        Ok(len) => ThriftWriteResult::Written(len as u64),
+        Err(e) => {
+          eprintln!("send_topic_messages: {:?}", e);
+          ThriftWriteResult::Failed
+        },
+      };
     unsafe {
       *result = ret;
     }
-  }
-
-  pub fn client_receive_message(
-    mut handle: UserClientHandle,
-    chunk: &mut ThriftChunk,
-  ) -> Result<usize, ThriftTransportError>
-  {
-    /* The incoming chunk will contain any message(s) from other client(s). */
-    let ThriftChunk { ptr, len, capacity } = chunk;
-    let len = *len as usize;
-    assert!(len <= *capacity as usize);
-    let byte_slice = unsafe { std::slice::from_raw_parts_mut(*ptr, len) };
-
-    /* We do *not* lock the topic or any other handles here! We simply read from
-     * our read buffer, and we copy over the contents of the write buffer if
-     * we haven't read enough! */
-    /* Please check out the docs at
-     * https://docs.rs/thrift/0.0.4/thrift/transport/struct.TBufferChannel.html for more info on the
-     * curious API of the TBufferChannel object (<3 thrift though!!). */
-    handle.extract_mut(&mut |UserClient { channel, .. }| {
-      let read_initial = channel.read(byte_slice)?;
-      Ok(if read_initial < len {
-        /* FIXME(CONCURRENCY): Does this *necessarily* mean that the read buffer was
-         * emptied? What is the method to check that here (since we are about
-         * to overwriite whatever's left of the read buffer)! */
-        assert!(!channel.bytes().any(|_| true));
-        /* If the read buffer is now indeed empty, let's copy everything from the
-         * write buffer! */
-        channel.copy_write_buffer_to_read_buffer();
-        let read_after_copying_from_write_buffer = channel.read(&mut byte_slice[read_initial..])?;
-        read_initial + read_after_copying_from_write_buffer
-      } else {
-        read_initial
-      })
-    })
   }
 
   #[repr(C)]
@@ -570,22 +564,28 @@ pub mod user_client {
   }
 
   #[no_mangle]
-  pub extern "C" fn receive_topic_message(
+  pub extern "C" fn receive_topic_messages(
     handle: InternKey,
     mut chunk: ThriftChunk,
     result: *mut ThriftReadResult,
   )
   {
-    let ret = match client_receive_message(UserClientHandle::from_key(handle), &mut chunk) {
-      Ok(len) => {
-        chunk.len = len as u64;
-        ThriftReadResult::Read(chunk.len)
-      },
-      Err(e) => {
-        eprintln!("receive_topic_message: {:?}", e);
-        ThriftReadResult::Failed
-      },
-    };
+    /* The incoming chunk will contain any message(s) from other client(s). */
+    let byte_slice: &mut [u8] = unsafe { chunk.as_slice_mut() };
+    let mut user_client = UserClientHandle::from_key(handle);
+    let ret =
+      match user_client.extract_mut::<_, UserClientHandleError, _>(&mut |c: &mut UserClient| {
+        c.read(byte_slice).map_err(|e| e.into())
+      }) {
+        Ok(len) => {
+          chunk.len = len as u64;
+          ThriftReadResult::Read(chunk.len)
+        },
+        Err(e) => {
+          eprintln!("receive_topic_messages: {:?}", e);
+          ThriftReadResult::Failed
+        },
+      };
     unsafe {
       *result = ret;
     }
@@ -597,7 +597,11 @@ mod tests {
   mod user_client {
     use super::super::all::*;
 
-    use std::{convert::From, fmt::Debug};
+    use std::{
+      convert::From,
+      fmt::Debug,
+      io::{Read, Write},
+    };
 
     fn extract_handle<
       T,
@@ -711,8 +715,8 @@ mod tests {
     /// This test vaguely maps out the current communication model. Two 'User's
     /// connect to a single 'Topic' (each thereby creating their own
     /// 'UserClient' connected to the 'Topic'). All messages sent with
-    /// 'client_send_message()` are broadcast to all other participants in the
-    /// 'Topic', which is then read back in 'client_receive_message()'.
+    /// 'client_send_messages()` are broadcast to all other participants in the
+    /// 'Topic', which is then read back in 'client_receive_messages()'.
     ///
     /// In this case, the two users are writing their own payload, then reading
     /// the other's payload as they each exchange a single write and read to
@@ -730,18 +734,24 @@ mod tests {
       let topic = extract_handle(TopicRequest);
 
       let message1 = "hello! this is a test!".as_bytes();
-      let (user1, user_client1, mut chunk1) =
+      let (user1, mut user_client1, mut chunk1) =
         create_new_user_with_client_for_topic(capacity, topic, kind, &message1);
 
       /* NB: Using the same topic!! */
       let message2 = "hello! also a test!".as_bytes();
-      let (user2, user_client2, mut chunk2) =
+      let (user2, mut user_client2, mut chunk2) =
         create_new_user_with_client_for_topic(capacity, topic, kind, &message2);
 
-      let written1 = client_send_message(user_client1, &chunk1)?;
+      let byte_slice1 = unsafe { std::slice::from_raw_parts(chunk1.ptr, chunk1.len as usize) };
+      let written1 = user_client1.extract_mut::<_, UserClientHandleError, _>(|c| {
+        c.write(byte_slice1).map_err(|e| e.into())
+      })?;
       assert_eq!(written1, chunk1.len as usize);
 
-      let written2 = client_send_message(user_client2, &chunk2)?;
+      let byte_slice2 = unsafe { std::slice::from_raw_parts(chunk2.ptr, chunk2.len as usize) };
+      let written2 = user_client2.extract_mut::<_, UserClientHandleError, _>(|c| {
+        c.write(byte_slice2).map_err(|e| e.into())
+      })?;
       assert_eq!(written2, chunk2.len as usize);
 
       /* Zero out the original message so we can ensure that it is read back in
@@ -751,14 +761,21 @@ mod tests {
 
       /* We know how much we expect to be reading -- we will be reading the content
        * of the other user client's message. To signal how much to (try to)
-       * read in client_receive_message(), we set the `len` field of the
+       * read in client_receive_messages(), we set the `len` field of the
        * ThriftChunk that we pass in to the function. */
       chunk1.len = message2.len() as u64;
-      let read1 = client_receive_message(user_client1, &mut chunk1)?;
+      let byte_slice1 = unsafe { std::slice::from_raw_parts_mut(chunk1.ptr, chunk1.len as usize) };
+      let read1 = user_client1.extract_mut::<_, UserClientHandleError, _>(|c| {
+        c.read(byte_slice1).map_err(|e| e.into())
+      })?;
       assert_eq!(read1, written2);
+
       /* Same for the other user client. */
       chunk2.len = message1.len() as u64;
-      let read2 = client_receive_message(user_client2, &mut chunk2)?;
+      let byte_slice2 = unsafe { std::slice::from_raw_parts_mut(chunk2.ptr, chunk2.len as usize) };
+      let read2 = user_client2.extract_mut::<_, UserClientHandleError, _>(|c| {
+        c.read(byte_slice2).map_err(|e| e.into())
+      })?;
       assert_eq!(read2, written1);
 
       /* Match the chunk contents with the expected messages after reading them! */

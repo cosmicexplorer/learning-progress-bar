@@ -15,8 +15,12 @@ pants-injected = []
 [dependencies]
 itertools = "0.8.2"
 lazy_static = "1"
+# macros = { path = "macros" }
 parking_lot = "0.6"
-thrift = "0.13.0"
+thrift = "0.14.0"
 
 [build-dependencies]
 cbindgen-cffi-compat = { path = "cbindgen-cffi-compat" }
+
+[patch.crates-io]
+thrift = { path = "/Users/dmcclanahan/tools/thrift/lib/rs" }
