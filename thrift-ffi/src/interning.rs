@@ -157,6 +157,10 @@ mod tests {
 
   new_handle![BHandleType => TABLE_B: Arc<RwLock<Interns<PointedToType>>>];
 
+  ///
+  /// Ensure that no Interned<T> implementor will ever be able to dereference a handle created via
+  /// Interned::from_key() in the wrong Interns<T> table (since all keys for all intern tables use a
+  /// global index).
   #[test]
   fn no_colliding_keys() -> Result<(), InternError> {
     let a = AHandleType::intern(PointedToType(1))?;

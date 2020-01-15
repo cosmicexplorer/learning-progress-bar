@@ -23,6 +23,8 @@ impl CoroutineError {
   }
 }
 
+///
+/// A mutex, and a condition variable to use with the mutex.
 pub struct StateVar<T> {
   mutex: Mutex<T>,
   cvar: Condvar,
@@ -42,18 +44,29 @@ impl<T> StateVar<T> {
   }
 }
 
+///
+/// Current interface for pausing and resuming progress via the condition variable/mutex in a
+/// StateVar instance. This is somewhat similar to coroutines in other languages.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum BlockingStates {
   Ready,
   Blocked,
 }
 
+///
+/// Abstract description of a bidirectional in-memory buffered I/O channel. Intended to work with
+/// thrift's TBufferChannel (which currently requires a tiny upstream thrift change).
+/* FIXME: upstream the thrift patch to support this interface! */
 pub trait ReadWriteBufferable: Read+Write {
   fn read_is_starved(&self) -> bool;
   fn write_is_starved(&self) -> bool;
   fn copy_write_to_read(&mut self);
 }
 
+///
+/// A struct wrapping access to some bidirectional IO-like object. The use case is to synchronize
+/// read and write attempts to many different read-write buffers to wait as little as possible.
+/// Condition variables are used in a coroutine-esque way here.
 pub struct SynchronizedReadWriteBuffer<IoObject: ReadWriteBufferable> {
   io_object: IoObject,
   read: StateVar<BlockingStates>,
@@ -120,7 +133,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
       while *write_state != BlockingStates::Ready {
         write_cvar.wait(&mut write_state);
       }
-      assert!(io_object.read_is_starved());
+      assert!(!io_object.write_is_starved());
 
       let (read_mutex, read_cvar) = read.get_conditional_locking_state();
       let mut read_state = read_mutex.lock();
@@ -148,7 +161,8 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
   ///
   /// Corresponds to 'read'.
   /* FIXME: could this one be restructured to look more like the write()
-   * impl??? */
+   * impl??? But note that the use of an `if` vs `while` is an intentional feature of the
+   * communication model (for now!!!). */
   fn read_as_many_possible(&mut self, byte_slice: &mut [u8]) -> Result<usize, CoroutineError> {
     let SynchronizedReadWriteBuffer {
       ref read,
@@ -167,6 +181,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
     assert!(!io_object.read_is_starved());
     let mut read: usize = 0;
     read += io_object.read(&mut byte_slice[read..])?;
+    assert!(read > 0);
 
     /* (1) Check to see if we can copy anything from the write buffer to complete
      * this attempted     read. */
@@ -179,7 +194,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
       io_object.copy_write_to_read();
 
       /* This always completely clears the write buffer, so we can be sure to let
-       * *all* writer know they can begin to write again (once they get the lock!). */
+       * *all* writers know they can begin to write again (once they get the lock!). */
       /* See https://docs.rs/parking_lot/0.7.1/parking_lot/struct.Condvar.html#differences-from-the-standard-library-condvar:
        * Condvar::notify_all will only wake up a single thread, the rest are
        * requeued to wait for the Mutex to be unlocked by the thread that

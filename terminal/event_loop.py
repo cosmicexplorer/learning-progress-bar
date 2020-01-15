@@ -126,10 +126,9 @@ class FFIMulticastTransport(TTransportBase):
   class ServerTransportFactory(TServerTransportBase):
     """Pass on constructor args to an underlying transport, created when .accept() is called!"""
 
-    def __init__(self, ffi, lib, cvar, user, target_user_kind, topic, *args, **kwargs) -> None:
+    def __init__(self, ffi, lib, user, target_user_kind, topic, *args, **kwargs) -> None:
       self._ffi = ffi
       self._lib = lib
-      self._cvar = cvar
 
       self._user = user
       self._topic = topic
@@ -154,7 +153,6 @@ class FFIMulticastTransport(TTransportBase):
         *self._args,
         **self._kwargs)
       ret.open()
-      self._cvar.notify()
       return ret
 
     def close(self) -> None:
@@ -171,7 +169,8 @@ class FFIMulticastTransport(TTransportBase):
     self._write_capacity = write_capacity
     self._is_open = False
 
-    self._mutable_chunk = None
+    self._mutable_read_chunk = None
+    self._intermediary_write_chunk = None
     self._max_cap = max(self._read_capacity, self._write_capacity)
 
     self._cur_read_result = None
@@ -180,10 +179,10 @@ class FFIMulticastTransport(TTransportBase):
   def isOpen(self):
     return self._is_open
 
-  def _zero_out_mutable_chunk(self):
-    assert self._mutable_chunk is not None
-    self._mutable_chunk[0] = dict(
-      ptr=0,
+  def _zero_out_mutable_read_chunk(self):
+    assert self._mutable_read_chunk is not None
+    self._mutable_read_chunk[0] = dict(
+      ptr=self._ffi.NULL,
       len=0,
       capacity=0,
     )
@@ -191,20 +190,19 @@ class FFIMulticastTransport(TTransportBase):
   @contextmanager
   def _with_chunk_from_buf(self, buf):
     with self._ffi.from_buffer(buf) as data:
-      self._mutable_chunk[0] = dict(
+      self._write_chunk[0] = dict(
         ptr=data,
         len=len(buf),
         capacity=len(buf),
       )
-      try:
-        yield self._mutable_chunk
-      finally:
-        self._zero_out_mutable_chunk()
+      yield self._write_chunk
 
   def open(self):
     assert not self._is_open
 
     self._handle = self._ffi.new('InternKey*')
+
+    self._write_chunk = self._ffi.new('ThriftChunk*')
 
     with self._ffi.new('UserClientRequest*') as request,\
          self._ffi.new('InternedObjectCreationResult*') as result:
@@ -219,8 +217,8 @@ class FFIMulticastTransport(TTransportBase):
       assert result.tag == self._lib.Created
       self._handle[0] = result.created.tup_0
 
-    self._mutable_chunk = self._ffi.new('ThriftChunk*')
-    self._zero_out_mutable_chunk()
+    self._mutable_read_chunk = self._ffi.new('ThriftChunk*')
+    self._zero_out_mutable_read_chunk()
 
     self._cur_read_result = self._ffi.new('ThriftReadResult*')
     self._cur_write_result = self._ffi.new('ThriftWriteResult*')
@@ -230,16 +228,20 @@ class FFIMulticastTransport(TTransportBase):
   def close(self):
     assert self._is_open
 
-    self._ffi.release(self._chunk_ptr)
-    self._chunk_ptr = None
-    self._ffi.release(self._mutable_chunk)
-    self._mutable_chunk = None
+    if self._mutable_read_chunk.ptr != self._ffi.NULL:
+      self._ffi.release(self._mutable_read_chunk.ptr)
+
+    self._ffi.release(self._mutable_read_chunk)
+    self._mutable_read_chunk = None
 
     self._ffi.release(self._cur_read_result)
     self._cur_read_result = None
 
     self._ffi.release(self._cur_write_result)
     self._cur_write_result = None
+
+    self._ffi.release(self._write_chunk)
+    self._write_chunk = None
 
     with self._ffi.new('InternedObjectDestructionResult*') as result:
       self._lib.destroy_user_client(self._handle[0], result)
@@ -250,15 +252,16 @@ class FFIMulticastTransport(TTransportBase):
     self._is_open = False
 
   def _maybe_expand_chunk(self, sz):
-    if sz <= self._mutable_chunk.capacity:
+    if sz <= self._mutable_read_chunk.capacity:
       return
 
     self._max_cap = sz
 
-    self._ffi.release(self._chunk_ptr)
-    self._chunk_ptr = self._ffi.new('char[]', self._max_cap)
-    self._mutable_chunk[0] = dict(
-      ptr=self._chunk_ptr,
+    if self._mutable_read_chunk.ptr != self._ffi.NULL:
+      self._ffi.release(self._mutable_read_chunk.ptr)
+
+    self._mutable_read_chunk[0] = dict(
+      ptr=self._ffi.new('char[]', self._max_cap),
       len=0,
       capacity=self._max_cap,
     )
@@ -268,22 +271,22 @@ class FFIMulticastTransport(TTransportBase):
 
     self._maybe_expand_chunk(sz)
 
-    self._mutable_chunk.len = sz
+    self._mutable_read_chunk.len = sz
 
     result = self._cur_read_result
-    self._lib.receive_topic_messages(self._handle[0], self._mutable_chunk[0], result)
+    self._lib.receive_topic_messages(self._handle[0], self._mutable_read_chunk[0], result)
     assert result.tag == self._lib.Read
     read = result.read.tup_0
     assert read <= sz
 
-    return self._ffi.buffer(self._mutable_chunk.ptr, read)[:]
+    return self._ffi.buffer(self._mutable_read_chunk.ptr, read)[:]
 
   def write(self, buf):
     assert self._is_open
 
     with self._with_chunk_from_buf(buf) as chunk:
       result = self._cur_write_result
-      self._lib.send_topic_messages(self._handle[0], self._mutable_chunk[0], result)
+      self._lib.send_topic_messages(self._handle[0], self._mutable_read_chunk[0], result)
       assert result.tag == self._lib.Written
 
     return result.written
@@ -354,7 +357,6 @@ def main() -> None:
   server_transport_factory = FFIMulticastTransport.ServerTransportFactory(
     ffi=ffi,
     lib=lib,
-    cvar=cvar,
     user=server_user[0],
     target_user_kind=client_user_kind[0],
     topic=topic[0],
