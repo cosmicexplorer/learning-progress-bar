@@ -1,6 +1,18 @@
+use lazy_static::lazy_static;
 use parking_lot::RwLock;
 
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{
+  collections::HashMap,
+  fmt::Debug,
+  sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+  },
+};
+
+lazy_static! {
+  static ref GLOBAL_GENSYM_STATE: AtomicU64 = AtomicU64::new(0);
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct InternError(String);
@@ -60,7 +72,6 @@ pub trait Handle<T>: Interned<T>+Sized {
 
 pub struct Interns<T> {
   mapping: HashMap<InternKey, Arc<RwLock<T>>>,
-  idx: u64,
 }
 
 impl<T> Interns<T> {
@@ -68,16 +79,13 @@ impl<T> Interns<T> {
   pub fn new() -> Self {
     Interns {
       mapping: HashMap::new(),
-      idx: 0,
     }
   }
 
+  fn gen_key() -> InternKey { InternKey(GLOBAL_GENSYM_STATE.fetch_add(1, Ordering::Relaxed)) }
+
   pub fn intern(&mut self, value: T) -> Result<InternKey, InternError> {
-    let key = {
-      let idx = self.idx;
-      self.idx += 1;
-      InternKey(idx)
-    };
+    let key = Self::gen_key();
     let wrapped = Arc::new(RwLock::new(value));
     if self.mapping.insert(key, wrapped).is_some() {
       Err(InternError(format!(
@@ -112,7 +120,6 @@ impl<T> Interns<T> {
 #[macro_export]
 macro_rules! new_handle {
   ($name:ident => $interns_name:ident : Arc < RwLock < Interns < $into:ty >> >) => {
-    use lazy_static::lazy_static;
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -120,7 +127,7 @@ macro_rules! new_handle {
       key: InternKey,
     }
 
-    lazy_static! {
+    ::lazy_static::lazy_static! {
       static ref $interns_name: std::sync::Arc<parking_lot::RwLock<Interns<$into>>> =
         std::sync::Arc::new(parking_lot::RwLock::new(Interns::new()));
     }
@@ -137,4 +144,36 @@ macro_rules! new_handle {
 
     impl Handle<$into> for $name {}
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+  struct PointedToType(usize);
+
+  new_handle![AHandleType => TABLE_A: Arc<RwLock<Interns<PointedToType>>>];
+
+  new_handle![BHandleType => TABLE_B: Arc<RwLock<Interns<PointedToType>>>];
+
+  #[test]
+  fn no_colliding_keys() -> Result<(), InternError> {
+    let a = AHandleType::intern(PointedToType(1))?;
+    let a_1 = AHandleType::intern(PointedToType(2))?;
+
+    assert_ne!(a, a_1);
+    assert_ne!(a.get(|a| *a), a_1.get(|a_1| *a_1));
+
+    let b = BHandleType::intern(PointedToType(1))?;
+    let b_1 = BHandleType::intern(PointedToType(1))?;
+
+    assert_ne!(b.as_key(), a.as_key());
+    assert_ne!(b.as_key(), a_1.as_key());
+
+    assert_ne!(b, b_1);
+    assert_eq!(b.get(|b| *b), b_1.get(|b_1| *b_1));
+
+    Ok(())
+  }
 }

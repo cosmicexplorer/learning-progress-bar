@@ -255,9 +255,6 @@ pub mod user_client {
         ..
       } = self;
 
-      /* Temporarily (read-)lock the topic handle to get all the other clients the
-       * full message *synchronously*(!!!)! */
-      /* FIXME(PERFORMANCE): This could be cached (??!!?!???)! */
       topic.extract(
         |Topic {
            user_client_mapping,
@@ -303,7 +300,8 @@ pub mod user_client {
         .handle_split_result_sequence::<UserClientHandleError, _>(|other_handle| {
           let written = other_handle.extract_mut::<_, UserClientHandleError, _>(
             |&mut UserClient {
-               ref mut transport_state, ..
+               ref mut transport_state,
+               ..
              }| { transport_state.write(&byte_slice).map_err(|e| e.into()) },
           )?;
           assert_eq!(written, byte_slice.len());
@@ -327,7 +325,8 @@ pub mod user_client {
         .handle_split_result_sequence(|other_handle| {
           other_handle.extract_mut::<_, UserClientHandleError, _>(
             |&mut UserClient {
-               ref mut transport_state, ..
+               ref mut transport_state,
+               ..
              }| { transport_state.flush().map_err(|e| e.into()) },
           )
         })
