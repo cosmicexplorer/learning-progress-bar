@@ -15,9 +15,9 @@ pants-injected = []
 [dependencies]
 regex = "1"
 thrift = "0.13.0"
-# thrift-ffi = { path = "../thrift-ffi", optional = true }
-thrift-ffi = { path = "thrift-ffi", optional = true }
+thrift-ffi = { path = "../thrift-ffi", optional = true }
+# thrift-ffi = { path = "thrift-ffi", optional = true }
 
 [build-dependencies]
-# cbindgen-cffi-compat = { path = "../thrift-ffi/cbindgen-cffi-compat", optional = true }
-cbindgen-cffi-compat = { path = "thrift-ffi/cbindgen-cffi-compat", optional = true }
+cbindgen-cffi-compat = { path = "../thrift-ffi/cbindgen-cffi-compat", optional = true }
+# cbindgen-cffi-compat = { path = "thrift-ffi/cbindgen-cffi-compat", optional = true }

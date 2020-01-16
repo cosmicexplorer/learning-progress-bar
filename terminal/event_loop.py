@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -195,6 +196,8 @@ class FFIMulticastTransport(TTransportBase):
         len=len(buf),
         capacity=len(buf),
       )
+      print(f'buf: {buf} / data: {data}', file=sys.stderr)
+      print(f'write_chunk: {self._write_chunk.ptr}', file=sys.stderr)
       yield self._write_chunk
 
   def open(self):
@@ -228,8 +231,12 @@ class FFIMulticastTransport(TTransportBase):
   def close(self):
     assert self._is_open
 
+    # FIXME: Figure out why cffi says this can't be released!!
     if self._mutable_read_chunk.ptr != self._ffi.NULL:
-      self._ffi.release(self._mutable_read_chunk.ptr)
+      try:
+        self._ffi.release(self._mutable_read_chunk.ptr)
+      except ValueError:
+        pass
 
     self._ffi.release(self._mutable_read_chunk)
     self._mutable_read_chunk = None
@@ -257,8 +264,12 @@ class FFIMulticastTransport(TTransportBase):
 
     self._max_cap = sz
 
+    # FIXME: Figure out why cffi says this can't be released!!
     if self._mutable_read_chunk.ptr != self._ffi.NULL:
-      self._ffi.release(self._mutable_read_chunk.ptr)
+      try:
+        self._ffi.release(self._mutable_read_chunk.ptr)
+      except ValueError:
+        pass
 
     self._mutable_read_chunk[0] = dict(
       ptr=self._ffi.new('char[]', self._max_cap),
@@ -274,19 +285,26 @@ class FFIMulticastTransport(TTransportBase):
     self._mutable_read_chunk.len = sz
 
     result = self._cur_read_result
+    print(f'({self._user.tup_0}) begin read of size {sz}', file=sys.stderr)
     self._lib.receive_topic_messages(self._handle[0], self._mutable_read_chunk[0], result)
+    print(f'({self._user.tup_0}) end read of size {sz}', file=sys.stderr)
     assert result.tag == self._lib.Read
     read = result.read.tup_0
     assert read <= sz
 
-    return self._ffi.buffer(self._mutable_read_chunk.ptr, read)[:]
+    buf = self._ffi.buffer(self._mutable_read_chunk.ptr, read)[:]
+    print(f'read={read}, buf={buf}')
+
+    return buf
 
   def write(self, buf):
     assert self._is_open
 
     with self._with_chunk_from_buf(buf) as chunk:
       result = self._cur_write_result
-      self._lib.send_topic_messages(self._handle[0], self._mutable_read_chunk[0], result)
+      print(f'({self._user.tup_0}) begin write of size {len(buf)}', file=sys.stderr)
+      self._lib.send_topic_messages(self._handle[0], chunk[0], result)
+      print(f'({self._user.tup_0}) end write of size {len(buf)}', file=sys.stderr)
       assert result.tag == self._lib.Written
 
     return result.written

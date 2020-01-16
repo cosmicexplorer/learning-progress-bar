@@ -1,9 +1,11 @@
 use parking_lot::{Condvar, Mutex};
 
 use std::{
+  clone::Clone,
   convert::From,
   fmt::{self, Debug},
   io::{self, Read, Write},
+  sync::Arc,
 };
 
 #[derive(Debug)]
@@ -31,46 +33,84 @@ pub struct StateVar<T> {
 }
 
 impl<T> StateVar<T> {
-  pub fn get_conditional_locking_state(&self) -> (&Mutex<T>, &Condvar) {
-    let StateVar { mutex, cvar } = self;
-    (mutex, cvar)
-  }
-
   pub fn new(value: T) -> Self {
     StateVar {
       mutex: Mutex::new(value),
       cvar: Condvar::new(),
     }
   }
+
+  pub fn notify_all_of_new_state<F: FnMut(&T) -> T>(&self, mut f: F) {
+    let StateVar { mutex, cvar } = self;
+    let mut state = mutex.lock();
+
+    *state = f(&*state);
+    cvar.notify_all();
+  }
+}
+
+impl<T: PartialEq+Eq> StateVar<T> {
+  pub fn wait_for_slot_to_completely_execute<E, F: FnMut() -> Result<T, E>>(
+    &self,
+    run_at_state: &T,
+    mut f: F,
+  ) -> Result<(), E>
+  {
+    let StateVar { mutex, cvar } = self;
+    let mut state = mutex.lock();
+
+    /* If the state is already in the desired position, we will immediately run
+     * the method. */
+    if *state == *run_at_state {
+      *state = f()?;
+    }
+    while *state != *run_at_state {
+      while *state != *run_at_state {
+        cvar.wait(&mut state);
+      }
+      *state = f()?;
+    }
+    Ok(())
+  }
 }
 
 ///
-/// Current interface for pausing and resuming progress via the condition variable/mutex in a
-/// StateVar instance. This is somewhat similar to coroutines in other languages.
+/// Current interface for pausing and resuming progress via the condition
+/// variable/mutex in a StateVar instance. This is somewhat similar to
+/// coroutines in other languages.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum BlockingStates {
+pub enum ReadBlockingStates {
+  HasData,
+  NeedsData,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum WriteBlockingStates {
   Ready,
   Blocked,
 }
 
 ///
-/// Abstract description of a bidirectional in-memory buffered I/O channel. Intended to work with
-/// thrift's TBufferChannel (which currently requires a tiny upstream thrift change).
+/// Abstract description of a bidirectional in-memory buffered I/O channel.
+/// Intended to work with thrift's TBufferChannel (which currently requires a
+/// tiny upstream thrift change).
 /* FIXME: upstream the thrift patch to support this interface! */
 pub trait ReadWriteBufferable: Read+Write {
-  fn read_is_starved(&self) -> bool;
-  fn write_is_starved(&self) -> bool;
-  fn copy_write_to_read(&mut self);
+  fn read_has_any(&self) -> bool;
+  fn write_is_full(&self) -> bool;
+  fn write_has_any(&self) -> bool;
+  fn copy_write_buffer_to_read_buffer(&mut self);
 }
 
 ///
-/// A struct wrapping access to some bidirectional IO-like object. The use case is to synchronize
-/// read and write attempts to many different read-write buffers to wait as little as possible.
-/// Condition variables are used in a coroutine-esque way here.
+/// A struct wrapping access to some bidirectional IO-like object. The use case
+/// is to synchronize read and write attempts to many different read-write
+/// buffers to wait as little as possible. Condition variables are used in a
+/// coroutine-esque way here.
 pub struct SynchronizedReadWriteBuffer<IoObject: ReadWriteBufferable> {
   io_object: IoObject,
-  read: StateVar<BlockingStates>,
-  write: StateVar<BlockingStates>,
+  read: StateVar<ReadBlockingStates>,
+  write: StateVar<WriteBlockingStates>,
 }
 
 impl<IoObject: ReadWriteBufferable> Debug for SynchronizedReadWriteBuffer<IoObject> {
@@ -83,32 +123,8 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
   pub fn new(io_object: IoObject) -> Self {
     SynchronizedReadWriteBuffer {
       io_object,
-      read: StateVar::new(BlockingStates::Blocked),
-      write: StateVar::new(BlockingStates::Ready),
-    }
-  }
-
-  ///
-  /// Corresponds to 'flush'.
-  /* TODO: Have an optional timeout arg, and return a Result? */
-  fn wait_until_read_is_empty(&self) {
-    let SynchronizedReadWriteBuffer {
-      write, io_object, ..
-    } = self;
-    let (write_mutex, write_cvar) = write.get_conditional_locking_state();
-    let mut write_state = write_mutex.lock();
-
-    /* Wait *twice* for the "write is starved" flag. This means that the channel
-     * has been cleared twice, which means that anything which was in the
-     * write buffer has now been read successfully (out of the read buffer). */
-    while !io_object.write_is_starved() {
-      assert_eq!(*write_state, BlockingStates::Ready);
-      write_cvar.wait(&mut write_state);
-    }
-
-    while !io_object.write_is_starved() {
-      assert_eq!(*write_state, BlockingStates::Ready);
-      write_cvar.wait(&mut write_state);
+      read: StateVar::new(ReadBlockingStates::NeedsData),
+      write: StateVar::new(WriteBlockingStates::Ready),
     }
   }
 
@@ -125,115 +141,128 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
       ref write,
       ref mut io_object,
     } = self;
-    let (write_mutex, write_cvar) = write.get_conditional_locking_state();
-    let mut write_state = write_mutex.lock();
 
     let mut written: usize = 0;
-    while written < byte_slice.len() {
-      while *write_state != BlockingStates::Ready {
-        write_cvar.wait(&mut write_state);
+    write.wait_for_slot_to_completely_execute(&WriteBlockingStates::Ready, move || {
+      eprintln!("written: {:?}", written);
+      if io_object.write_is_full() {
+        read.notify_all_of_new_state(|read_state| match read_state {
+          ReadBlockingStates::NeedsData => {
+            assert!(!io_object.read_has_any());
+            io_object.copy_write_buffer_to_read_buffer();
+            assert!(io_object.read_has_any());
+            ReadBlockingStates::HasData
+          },
+          ReadBlockingStates::HasData => ReadBlockingStates::HasData,
+        });
+        if io_object.write_is_full() {
+          return Ok(WriteBlockingStates::Blocked);
+        }
       }
-      assert!(!io_object.write_is_starved());
 
-      let (read_mutex, read_cvar) = read.get_conditional_locking_state();
-      let mut read_state = read_mutex.lock();
+      if byte_slice.len() == 0 {
+        return Ok(WriteBlockingStates::Ready);
+      }
 
       let written_new = io_object.write(&byte_slice[written..])?;
       assert!(written_new > 0);
-
-      *read_state = BlockingStates::Ready;
-      read_cvar.notify_all();
+      dbg!(&written_new);
 
       written += written_new;
+      assert!(written <= byte_slice.len());
 
-      if io_object.write_is_starved() {
-        /* Any other threads of execution which were previously waiting on
-         * `write_cvar()` will immediately check the `write_state` and
-         * immediately go back to `write_cvar.wait()` in the while loop
-         * above. */
-        *write_state = BlockingStates::Blocked;
+      if written == byte_slice.len() {
+        Ok(WriteBlockingStates::Ready)
+      } else {
+        assert!(io_object.write_is_full());
+        Ok(WriteBlockingStates::Blocked)
       }
-    }
-
-    Ok(())
+    })
   }
 
   ///
   /// Corresponds to 'read'.
-  /* FIXME: could this one be restructured to look more like the write()
-   * impl??? But note that the use of an `if` vs `while` is an intentional feature of the
-   * communication model (for now!!!). */
-  fn read_as_many_possible(&mut self, byte_slice: &mut [u8]) -> Result<usize, CoroutineError> {
+  fn read_until_complete(&mut self, byte_slice: &mut [u8]) -> Result<(), CoroutineError> {
     let SynchronizedReadWriteBuffer {
       ref read,
       ref write,
       ref mut io_object,
     } = self;
 
-    let (read_mutex, read_cvar) = read.get_conditional_locking_state();
-    let mut read_state = read_mutex.lock();
+    /* Ensure that if we come into this function and the read buffer is empty, we
+     * at least try to copy over the write buffer. This lets us avoid
+     * blocking at all if there is enough data in the write buffer to satisfy
+     * the read bytes request. */
+    read.notify_all_of_new_state(|read_state| match read_state {
+      ReadBlockingStates::NeedsData => {
+        assert!(!io_object.read_has_any());
+        write.notify_all_of_new_state(|_| {
+          assert!(!io_object.read_has_any());
+          io_object.copy_write_buffer_to_read_buffer();
+          WriteBlockingStates::Ready
+        });
+        if io_object.read_has_any() {
+          ReadBlockingStates::HasData
+        } else {
+          ReadBlockingStates::NeedsData
+        }
+      },
+      ReadBlockingStates::HasData => {
+        if !io_object.read_has_any() {
+          write.notify_all_of_new_state(|_| {
+            assert!(!io_object.read_has_any());
+            io_object.copy_write_buffer_to_read_buffer();
+            WriteBlockingStates::Ready
+          });
+          if !io_object.read_has_any() {
+            return ReadBlockingStates::NeedsData;
+          }
+        }
+        ReadBlockingStates::HasData
+      },
+    });
 
-    /* A notification to `read_cvar` means: "I just wrote something to your
-     * `channel`!" */
-    while *read_state != BlockingStates::Ready {
-      read_cvar.wait(&mut read_state);
-    }
-    assert!(!io_object.read_is_starved());
-    let mut read: usize = 0;
-    read += io_object.read(&mut byte_slice[read..])?;
-    assert!(read > 0);
-
-    /* (1) Check to see if we can copy anything from the write buffer to complete
-     * this attempted     read. */
-    if read < byte_slice.len() {
-      /* Since the read buffer is now (presumably) empty, let's copy everything
-       * from the write buffer! */
-      let (write_mutex, write_cvar) = write.get_conditional_locking_state();
-      let mut write_state = write_mutex.lock();
-
-      io_object.copy_write_to_read();
-
-      /* This always completely clears the write buffer, so we can be sure to let
-       * *all* writers know they can begin to write again (once they get the lock!). */
-      /* See https://docs.rs/parking_lot/0.7.1/parking_lot/struct.Condvar.html#differences-from-the-standard-library-condvar:
-       * Condvar::notify_all will only wake up a single thread, the rest are
-       * requeued to wait for the Mutex to be unlocked by the thread that
-       * was woken up. */
-      if !io_object.write_is_starved() {
-        *write_state = BlockingStates::Ready;
-        write_cvar.notify_all();
+    let mut all_bytes_read: usize = 0;
+    read.wait_for_slot_to_completely_execute(&ReadBlockingStates::HasData, move || {
+      if !io_object.read_has_any() {
+        write.notify_all_of_new_state(|_| {
+          assert!(!io_object.read_has_any());
+          io_object.copy_write_buffer_to_read_buffer();
+          WriteBlockingStates::Ready
+        });
+        if !io_object.read_has_any() {
+          return Ok(ReadBlockingStates::NeedsData);
+        }
       }
 
-      /* If the write buffer was non-empty, those bytes are now in the read buffer,
-       * and reads can begin again! */
-      /* NB: THIS `byte_slice[read..]` BELOW SHOULD BE INDEXED STARTING AT THE `read` INDEX, *NOT*
-       * AT 0!!!! */
-      let read_new = io_object.read(&mut byte_slice[read..])?;
-      /* NB: This `read_new` may be 0, if there was nothing in the write buffer to copy over!! */
-      read += read_new;
-    }
-    assert!(read > 0);
-    assert!(read <= byte_slice.len());
+      if byte_slice.len() == 0 {
+        return Ok(ReadBlockingStates::HasData);
+      }
 
-    /* (2) Check again to see whether we were able to add enough bytes to
-     * complete the read from     copying over the write buffer. */
-    if io_object.read_is_starved() {
-      /* The next time this method is called, it will block at `read_cvar.wait()`! */
-      *read_state = BlockingStates::Blocked;
-      read_cvar.notify_one();
-    }
+      let read_new = io_object.read(&mut byte_slice[all_bytes_read..])?;
+      assert!(read_new > 0);
 
-    assert!(read <= byte_slice.len());
+      all_bytes_read += read_new;
+      assert!(all_bytes_read <= byte_slice.len());
 
-    Ok(read)
+      if all_bytes_read == byte_slice.len() {
+        Ok(ReadBlockingStates::HasData)
+      } else {
+        /* NB: We expect that if the read did not fill out our buffer, that the
+         * underlying read buffer must then be empty! */
+        assert!(!io_object.read_has_any());
+        Ok(ReadBlockingStates::NeedsData)
+      }
+    })
   }
 }
 
 impl<IoObject: ReadWriteBufferable> Read for SynchronizedReadWriteBuffer<IoObject> {
   fn read(&mut self, byte_slice: &mut [u8]) -> io::Result<usize> {
     self
-      .read_as_many_possible(byte_slice)
-      .map_err(|e| e.into_io_error())
+      .read_until_complete(byte_slice)
+      .map_err(|e| e.into_io_error())?;
+    Ok(byte_slice.len())
   }
 }
 
@@ -246,8 +275,47 @@ impl<IoObject: ReadWriteBufferable> Write for SynchronizedReadWriteBuffer<IoObje
   }
 
   fn flush(&mut self) -> io::Result<()> {
-    self.io_object.flush()?;
-    self.wait_until_read_is_empty();
+    /* FIXME: make flushing the underlying I/O object re-entrant!! */
+    /* self.io_object.flush()?; */
+    /* TODO: document why this works!!! */
+    self
+      .write_until_complete(&[])
+      .and_then(|()| self.read_until_complete(&mut []))
+      .map_err(|e| e.into_io_error())?;
     Ok(())
+  }
+}
+
+/* FIXME: this should be something *normal* about Send/Sync but I can't
+ * figure out how to do that, so replicating it here, probably!!! */
+pub unsafe trait SyncRwAccessable: Read+Write {}
+
+unsafe impl<IoObject: ReadWriteBufferable> SyncRwAccessable
+  for SynchronizedReadWriteBuffer<IoObject>
+{
+}
+
+#[derive(Debug)]
+pub struct SyncRwBuf<T: SyncRwAccessable> {
+  inner: Arc<T>,
+}
+
+impl<T: SyncRwAccessable> Clone for SyncRwBuf<T> {
+  fn clone(&self) -> Self {
+    Self::new(Arc::clone(&self.inner))
+  }
+}
+
+impl<T: SyncRwAccessable> SyncRwBuf<T> {
+  pub fn new(inner: Arc<T>) -> Self {
+    SyncRwBuf { inner }
+  }
+
+  /* FIXME: figure out a better way to make it possible to have multiple
+   * mutable handles to something at once!! */
+  pub fn get_mut<ReturnType, F: FnOnce(&mut T) -> ReturnType>(&self, f: F) -> ReturnType {
+    let mut inner_ref = Arc::clone(&self.inner);
+    let mut inner = unsafe { Arc::get_mut_unchecked(&mut inner_ref) };
+    f(&mut inner)
   }
 }
