@@ -41,6 +41,21 @@ pub mod lifecycle;
 
 pub mod coroutines;
 
+pub mod logging;
+
+pub mod tracing_setup {
+  use tracing::info;
+  use tracing_subscriber;
+
+  #[no_mangle]
+  pub extern "C" fn set_default_tracing_subscriber() {
+    tracing_subscriber::fmt::init();
+    /* FIXME: convert this to have a real FFI return value instead of calling
+     * .expect() here! */
+    info!("wow!!!");
+  }
+}
+
 pub mod user_kind {
   use super::{interning::*, lifecycle::*};
 
@@ -210,7 +225,7 @@ pub mod user_client {
 
   use std::{
     convert::From,
-    fmt::Debug,
+    fmt::{self, Debug},
     io::{self, Read, Write},
     sync::Arc,
   };
@@ -279,8 +294,9 @@ pub mod user_client {
   impl Read for UserClient {
     ///
     /// Load a message of the desired size into the buffer. If that fails,
+    #[tracing::instrument]
     fn read(&mut self, byte_slice: &mut [u8]) -> io::Result<usize> {
-      eprintln!("self: {:?} / read: {:?}", &self, &byte_slice);
+      /* eprintln!("self: {:?} / read: {:?}", &self, &byte_slice); */
       self
         .transport_state
         .get_mut(|transport_state| transport_state.read(byte_slice))
@@ -296,23 +312,23 @@ pub mod user_client {
     /// that are possible. Return a merged error message of     all errors
     /// writing to the matching other clients.
     fn write(&mut self, byte_slice: &[u8]) -> io::Result<usize> {
-      eprintln!("self; {:?} / write: {:?}", &self, &byte_slice);
+      /* eprintln!("self; {:?} / write: {:?}", &self, &byte_slice); */
       /* Get clients to write to. */
       let matching_clients = self
         .other_matching_clients()
         .map_err(|e| e.into_io_error())?;
-      eprintln!(
-        "self: {:?}, matching_clients: {:?}",
-        &self, &matching_clients
-      );
+      /* eprintln!( */
+      /* "self: {:?}, matching_clients: {:?}", */
+      /* &self, &matching_clients */
+      /* ); */
 
       /* Write the *entire* message to *all* matching clients *synchronously*!!! */
       matching_clients
         .into_iter()
         .handle_split_result_sequence::<UserClientHandleError, _>(|other_handle| {
-          dbg!(&other_handle);
+          /* dbg!(&other_handle); */
           let other_transport = other_handle.get(|c| c.get().transport_state.clone())?;
-          dbg!(&other_transport);
+          /* dbg!(&other_transport); */
           let written =
             other_transport.get_mut(|other_transport| other_transport.write(&byte_slice))?;
           assert_eq!(written, byte_slice.len());
@@ -325,14 +341,15 @@ pub mod user_client {
     ///
     /// Reach into all matching other clients in the same topic, and wait on
     /// each of their read buffers being *completely* processed.
+    #[tracing::instrument]
     fn flush(&mut self) -> io::Result<()> {
       let matching_clients = self
         .other_matching_clients()
         .map_err(|e| e.into_io_error())?;
-      eprintln!(
-        "self: {:?}, matching_clients: {:?}",
-        &self, &matching_clients
-      );
+      /* eprintln!( */
+      /* "self: {:?}, matching_clients: {:?}", */
+      /* &self, &matching_clients */
+      /* ); */
 
       matching_clients
         .into_iter()
@@ -355,7 +372,10 @@ pub mod user_client {
 
     pub fn get(&self) -> &UserClient { &*self.0 }
 
-    pub fn into_sync_buf(self) -> SyncRwBuf<UserClient> { SyncRwBuf::new(Arc::clone(&self.0)) }
+    pub fn into_sync_buf(self) -> SyncRwBuf<UserClient> {
+      /* eprintln!("into_sync_buf: {:?}", &self); */
+      SyncRwBuf::new(Arc::clone(&self.0))
+    }
   }
 
   new_handle![UserClientHandle => USER_CLIENT_HANDLES: Arc<RwLock<Interns<UserClientWrapper>>>];
@@ -441,7 +461,7 @@ pub mod user_client {
         (*user, *topic)
       })?;
 
-      let topic2 = topic.clone();
+      let topic2 = topic;
       topic.extract_mut(
         move |Topic {
                 user_client_mapping,
@@ -465,7 +485,7 @@ pub mod user_client {
         (*user, *topic)
       })?;
 
-      let topic2 = topic.clone();
+      let topic2 = topic;
       topic.extract_mut(
         move |Topic {
                 user_client_mapping,
@@ -535,7 +555,19 @@ pub mod user_client {
     pub capacity: u64,
   }
 
+  impl Debug for ThriftChunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      write!(
+        f,
+        "ThriftChunk(len={:?}, capacity={:?}, ptr={:?})",
+        self.len, self.capacity, self.ptr
+      )
+    }
+  }
+
   impl ThriftChunk {
+    ///
+    /// # Safety: TODO add section!!!
     pub unsafe fn as_slice(&self) -> &[u8] {
       /* TODO: a macro that turns:
        *   <xxx>![let ThriftChunk { capacity: (capacity * 2), .. } = chunk]
@@ -547,6 +579,8 @@ pub mod user_client {
       std::slice::from_raw_parts(*ptr, *len as usize)
     }
 
+    ///
+    /// # Safety: TODO add section!!!
     pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
       let ThriftChunk { ptr, len, capacity } = self;
       assert!(len <= capacity);
@@ -561,6 +595,7 @@ pub mod user_client {
     Failed,
   }
 
+  #[tracing::instrument]
   #[no_mangle]
   pub extern "C" fn send_topic_messages(
     handle: InternKey,
@@ -570,14 +605,17 @@ pub mod user_client {
   {
     /* Get the topic, and message every other client *synchronously*! */
     let byte_slice: &[u8] = unsafe { chunk.as_slice() };
-    dbg!(&byte_slice);
+    /* dbg!(&byte_slice); */
 
     let ret = match UserClientHandle::from_key(handle)
       .get(|c| c.clone().into_sync_buf())
-      .map_err(|e| UserClientHandleError::from(e))
+      .map_err(UserClientHandleError::from)
       .and_then(|client_buf| {
         client_buf
-          .get_mut(|c| c.write(byte_slice))
+          .get_mut(|c| {
+            /* eprintln!("c: {:?}", &c); */
+            c.write(byte_slice)
+          })
           .map_err(|e| e.into())
       }) {
       Ok(len) => ThriftWriteResult::Written(len as u64),
@@ -598,6 +636,7 @@ pub mod user_client {
     Failed,
   }
 
+  #[tracing::instrument]
   #[no_mangle]
   pub extern "C" fn receive_topic_messages(
     handle: InternKey,
@@ -607,14 +646,17 @@ pub mod user_client {
   {
     /* The incoming chunk will contain any message(s) from other client(s). */
     let byte_slice: &mut [u8] = unsafe { chunk.as_slice_mut() };
-    dbg!(&byte_slice);
+    /* dbg!(&byte_slice); */
 
     let ret = match UserClientHandle::from_key(handle)
       .get(|c| c.clone().into_sync_buf())
-      .map_err(|e| UserClientHandleError::from(e))
+      .map_err(UserClientHandleError::from)
       .and_then(|client_buf| {
         client_buf
-          .get_mut(|c| c.read(byte_slice))
+          .get_mut(|c| {
+            /* eprintln!("c1: {:?}", &c); */
+            c.read(byte_slice)
+          })
           .map_err(|e| e.into())
       }) {
       Ok(len) => {

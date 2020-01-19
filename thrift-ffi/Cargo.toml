@@ -19,6 +19,9 @@ lazy_static = "1"
 parking_lot = "0.6"
 # thrift = "0.14.0"
 thrift = { path = "/Users/dmcclanahan/tools/thrift/lib/rs" }
+tracing = "0.1"
+tracing-subscriber = "0.2.0-alpha.4"
+zipkin = { path = "../zipkin" }
 
 [build-dependencies]
 cbindgen-cffi-compat = { path = "cbindgen-cffi-compat" }

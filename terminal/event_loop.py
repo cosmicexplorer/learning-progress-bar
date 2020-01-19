@@ -326,6 +326,8 @@ def main() -> None:
 
   ffi, lib = bootstrap_thrift_ffi()
 
+  lib.set_default_tracing_subscriber()
+
   capacity = 3000
 
   client_user_kind = ffi.new('InternKey*')

@@ -32,6 +32,10 @@ pub struct StateVar<T> {
   cvar: Condvar,
 }
 
+impl<T> Debug for StateVar<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "StateVar(...)") }
+}
+
 impl<T> StateVar<T> {
   pub fn new(value: T) -> Self {
     StateVar {
@@ -95,7 +99,7 @@ pub enum WriteBlockingStates {
 /// Intended to work with thrift's TBufferChannel (which currently requires a
 /// tiny upstream thrift change).
 /* FIXME: upstream the thrift patch to support this interface! */
-pub trait ReadWriteBufferable: Read+Write {
+pub trait ReadWriteBufferable: Read+Write+Debug {
   fn read_has_any(&self) -> bool;
   fn write_is_full(&self) -> bool;
   fn write_has_any(&self) -> bool;
@@ -107,19 +111,14 @@ pub trait ReadWriteBufferable: Read+Write {
 /// is to synchronize read and write attempts to many different read-write
 /// buffers to wait as little as possible. Condition variables are used in a
 /// coroutine-esque way here.
+#[derive(Debug)]
 pub struct SynchronizedReadWriteBuffer<IoObject: ReadWriteBufferable> {
   io_object: IoObject,
   read: StateVar<ReadBlockingStates>,
   write: StateVar<WriteBlockingStates>,
 }
 
-impl<IoObject: ReadWriteBufferable> Debug for SynchronizedReadWriteBuffer<IoObject> {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "SynchronizedReadWriteBuffer(...)")
-  }
-}
-
-impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
+impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> {
   pub fn new(io_object: IoObject) -> Self {
     SynchronizedReadWriteBuffer {
       io_object,
@@ -144,7 +143,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
 
     let mut written: usize = 0;
     write.wait_for_slot_to_completely_execute(&WriteBlockingStates::Ready, move || {
-      eprintln!("written: {:?}", written);
+      /* eprintln!("written: {:?}", written); */
       if io_object.write_is_full() {
         read.notify_all_of_new_state(|read_state| match read_state {
           ReadBlockingStates::NeedsData => {
@@ -160,7 +159,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
         }
       }
 
-      if byte_slice.len() == 0 {
+      if byte_slice.is_empty() {
         return Ok(WriteBlockingStates::Ready);
       }
 
@@ -183,6 +182,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
   ///
   /// Corresponds to 'read'.
   fn read_until_complete(&mut self, byte_slice: &mut [u8]) -> Result<(), CoroutineError> {
+    /* eprintln!("read_until_complete: {:?}", &self); */
     let SynchronizedReadWriteBuffer {
       ref read,
       ref write,
@@ -197,6 +197,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
       ReadBlockingStates::NeedsData => {
         assert!(!io_object.read_has_any());
         write.notify_all_of_new_state(|_| {
+          /* panic!("wow?1?"); */
           assert!(!io_object.read_has_any());
           io_object.copy_write_buffer_to_read_buffer();
           WriteBlockingStates::Ready
@@ -208,6 +209,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
         }
       },
       ReadBlockingStates::HasData => {
+        /* panic!("wow?3?"); */
         if !io_object.read_has_any() {
           write.notify_all_of_new_state(|_| {
             assert!(!io_object.read_has_any());
@@ -224,6 +226,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
 
     let mut all_bytes_read: usize = 0;
     read.wait_for_slot_to_completely_execute(&ReadBlockingStates::HasData, move || {
+      /* panic!("wow?2?"); */
       if !io_object.read_has_any() {
         write.notify_all_of_new_state(|_| {
           assert!(!io_object.read_has_any());
@@ -235,7 +238,7 @@ impl<IoObject: ReadWriteBufferable> SynchronizedReadWriteBuffer<IoObject> {
         }
       }
 
-      if byte_slice.len() == 0 {
+      if byte_slice.is_empty() {
         return Ok(ReadBlockingStates::HasData);
       }
 
@@ -301,15 +304,11 @@ pub struct SyncRwBuf<T: SyncRwAccessable> {
 }
 
 impl<T: SyncRwAccessable> Clone for SyncRwBuf<T> {
-  fn clone(&self) -> Self {
-    Self::new(Arc::clone(&self.inner))
-  }
+  fn clone(&self) -> Self { Self::new(Arc::clone(&self.inner)) }
 }
 
 impl<T: SyncRwAccessable> SyncRwBuf<T> {
-  pub fn new(inner: Arc<T>) -> Self {
-    SyncRwBuf { inner }
-  }
+  pub fn new(inner: Arc<T>) -> Self { SyncRwBuf { inner } }
 
   /* FIXME: figure out a better way to make it possible to have multiple
    * mutable handles to something at once!! */
