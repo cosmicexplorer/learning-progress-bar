@@ -1,3 +1,24 @@
+/* NB: Any nightly-only features go here >=]! */
+#![feature(get_mut_unchecked)]
+#![deny(warnings)]
+// Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be
+// copied and pasted across crates, but there doesn't appear to be a way to include inner attributes
+// from a common source.
+#![deny(
+  clippy::all,
+  clippy::default_trait_access,
+  clippy::expl_impl_clone_on_copy,
+  clippy::if_not_else,
+  clippy::needless_continue,
+  clippy::single_match_else,
+  clippy::unseparated_literal_suffix,
+  clippy::used_underscore_binding
+)]
+// We only use unsafe pointer dereference in our no_mangle exposed API, but it is nicer to list
+// just the one minor call as unsafe, than to mark the whole function as unsafe which may hide
+// other unsafeness.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use parking_lot::{Condvar, Mutex};
 
 use std::{
@@ -5,6 +26,7 @@ use std::{
   convert::From,
   fmt::{self, Debug},
   io::{self, Read, Write},
+  ops::{Deref, DerefMut},
   sync::Arc,
 };
 
@@ -291,7 +313,7 @@ impl<IoObject: ReadWriteBufferable> Write for SynchronizedReadWriteBuffer<IoObje
 
 /* FIXME: this should be something *normal* about Send/Sync but I can't
  * figure out how to do that, so replicating it here, probably!!! */
-pub unsafe trait SyncRwAccessable: Read+Write {}
+pub unsafe trait SyncRwAccessable {}
 
 unsafe impl<IoObject: ReadWriteBufferable> SyncRwAccessable
   for SynchronizedReadWriteBuffer<IoObject>
@@ -310,11 +332,24 @@ impl<T: SyncRwAccessable> Clone for SyncRwBuf<T> {
 impl<T: SyncRwAccessable> SyncRwBuf<T> {
   pub fn new(inner: Arc<T>) -> Self { SyncRwBuf { inner } }
 
-  /* FIXME: figure out a better way to make it possible to have multiple
-   * mutable handles to something at once!! */
-  pub fn get_mut<ReturnType, F: FnOnce(&mut T) -> ReturnType>(&self, f: F) -> ReturnType {
-    let mut inner_ref = Arc::clone(&self.inner);
-    let mut inner = unsafe { Arc::get_mut_unchecked(&mut inner_ref) };
-    f(&mut inner)
+  pub fn into_arc(self) -> Arc<T> { self.inner }
+}
+
+impl<T: SyncRwAccessable> Deref for SyncRwBuf<T> {
+  type Target = T;
+
+  fn deref(&self) -> &Self::Target { self.inner.deref() }
+}
+
+impl<T: SyncRwAccessable> DerefMut for SyncRwBuf<T> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    unsafe { Arc::get_mut_unchecked(&mut self.inner) }
   }
 }
+
+unsafe impl<T: SyncRwAccessable> Send for SyncRwBuf<T> {}
+unsafe impl<T: SyncRwAccessable> Sync for SyncRwBuf<T> {}
+
+unsafe impl<T: SyncRwAccessable> SyncRwAccessable for SyncRwBuf<T> {}
+unsafe impl<T: SyncRwAccessable> SyncRwAccessable for Arc<T> {}
+unsafe impl<T: SyncRwAccessable> SyncRwAccessable for Mutex<T> {}

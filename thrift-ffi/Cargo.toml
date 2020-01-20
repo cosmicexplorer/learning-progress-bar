@@ -13,10 +13,11 @@ cffi-compatible = []
 pants-injected = []
 
 [dependencies]
+coroutines = { path = "../coroutines" }
 itertools = "0.8.2"
 lazy_static = "1"
 # macros = { path = "macros" }
-parking_lot = "0.6"
+parking_lot = "0.10.0"
 # thrift = "0.14.0"
 thrift = { path = "/Users/dmcclanahan/tools/thrift/lib/rs" }
 tracing = "0.1"

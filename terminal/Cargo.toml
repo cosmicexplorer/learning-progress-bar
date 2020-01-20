@@ -13,10 +13,13 @@ cffi-compatible = ["thrift-ffi/cffi-compatible"]
 pants-injected = []
 
 [dependencies]
+connect = { path = "../zipkin/connect" }
+lazy_static = "1"
 regex = "1"
 thrift = "0.13.0"
 thrift-ffi = { path = "../thrift-ffi", optional = true }
 # thrift-ffi = { path = "thrift-ffi", optional = true }
+zipkin = { path = "../zipkin" }
 
 [build-dependencies]
 cbindgen-cffi-compat = { path = "../thrift-ffi/cbindgen-cffi-compat", optional = true }

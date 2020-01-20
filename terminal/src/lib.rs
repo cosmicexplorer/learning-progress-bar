@@ -32,81 +32,16 @@
 pub mod streaming_interface;
 /* use streaming_interface::*; */
 
-/* NB: This ensures that our produced cdylib will contain the symbols exported by the thrift-ffi
- * library, such as the create_user() and destroy_user() functions. Our exported library will both:
- * (1) Have whatever FFI we want to export in this lib.rs *for a rust client*!
- * (2) Re-expose the symbols for the base thrift FFI idea from the thrift-ffi crate so that those
- *     can be used e.g. by python cffi!
+/* NB: This ensures that our produced cdylib will contain the symbols
+ * exported by the thrift-ffi library, such as the create_user() and
+ * destroy_user() functions. Our exported library will both:
+ * (1) Have whatever FFI we want to export in this lib.rs *for a rust
+ * client*! (2) Re-expose the symbols for the base thrift FFI idea from the
+ * thrift-ffi crate so that those     can be used e.g. by python cffi!
  */
 pub use thrift_ffi::all::*;
 
-/* use regex::Regex; */
-/* use thrift::transport::{ */
-/* TInputProtocolFactory, TOutputProtocolFactory, TReadTransportFactory,
- * TWriteTransportFactory, */
-/* }; */
-
-/* use std::{io, slice}; */
-
-/* #[repr(C)] */
-/* #[derive(Clone, Copy)] */
-/* struct BasicServer; */
-
-/* impl TerminalWrapperSyncHandler for BasicServer { */
-/* fn handle_begin_execution(&self, exe_req: ProcessExecutionRequest) ->
- * thrift::Result<RunId> { */
-/* Ok(RunId::new("asdf")) */
-/* } */
-
-/* fn handle_get_next_event(&self) -> thrift::Result<SubprocessEvent> { */
-/* Ok(SubprocessEvent::new(None, None, None, None)) */
-/* } */
-/* } */
-
-/* #[repr(C)] */
-/* #[derive(Clone, Copy)] */
-/* pub enum ServerCreationRequest; */
-
-/* #[repr(C)] */
-/* #[derive(Clone, Copy)] */
-/* pub enum ServerCreationResponse { */
-/* Success(*mut BasicServer), */
-/* Failure, */
-/* } */
-
-/* #[derive(Debug, Clone, Eq, PartialEq)] */
-/* pub struct TerminalFFIError(String); */
-
-/* pub fn create_server(request: ServerCreationRequest) ->
- * Result<BasicServer, TerminalFFIError> { */
-/* let processor = TerminalWrapperSyncProcessor::new(BasicServer); */
-
-/* // instantiate the server */
-/* let i_tr_fact: Box<TReadTransportFactory> =
- * Box::new(TBufferedReadTransportFactory::new()); */
-/* let i_pr_fact: Box<TInputProtocolFactory> =
- * Box::new(TBinaryInputProtocolFactory::new()); */
-/* let o_tr_fact: Box<TWriteTransportFactory> =
- * Box::new(TBufferedWriteTransportFactory::new()); */
-/* let o_pr_fact: Box<TOutputProtocolFactory> =
- * Box::new(TBinaryOutputProtocolFactory::new()); */
-
-
-/* } */
-
-/* #[no_mangle] */
-/* pub extern "C" fn create_basic_thrift_server( */
-/* request: *const ServerCreationRequest, */
-/* response: *mut ServerCreationResponse, */
-/* ) */
-/* { */
-
-
-/* let ret = Box::new(BasicServer { buffer_handle }); */
-/* unsafe { */
-/* *response = ServerCreationResponse::Success(Box::into_raw(ret)); */
-/* } */
-/* } */
+pub use zipkin::registration::{set_default_tracing_subscriber, wait_on_flushing};
 
 #[cfg(test)]
 mod tests {
