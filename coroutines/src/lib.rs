@@ -108,12 +108,14 @@ impl<T: PartialEq+Eq> StateVar<T> {
 pub enum ReadBlockingStates {
   HasData,
   NeedsData,
+  WasJustCompleted,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum WriteBlockingStates {
   Ready,
   Blocked,
+  FinishedWrite,
 }
 
 ///
@@ -164,7 +166,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
     } = self;
 
     let mut written: usize = 0;
-    write.wait_for_slot_to_completely_execute(&WriteBlockingStates::Ready, move || {
+    write.wait_for_slot_to_completely_execute(&WriteBlockingStates::FinishedWrite, move || {
       /* eprintln!("written: {:?}", written); */
       if io_object.write_is_full() {
         read.notify_all_of_new_state(|read_state| match read_state {
@@ -174,7 +176,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
             assert!(io_object.read_has_any());
             ReadBlockingStates::HasData
           },
-          ReadBlockingStates::HasData => ReadBlockingStates::HasData,
+          x => *x,
         });
         if io_object.write_is_full() {
           return Ok(WriteBlockingStates::Blocked);
@@ -193,7 +195,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
       assert!(written <= byte_slice.len());
 
       if written == byte_slice.len() {
-        Ok(WriteBlockingStates::Ready)
+        Ok(WriteBlockingStates::FinishedWrite)
       } else {
         assert!(io_object.write_is_full());
         Ok(WriteBlockingStates::Blocked)
@@ -247,7 +249,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
     });
 
     let mut all_bytes_read: usize = 0;
-    read.wait_for_slot_to_completely_execute(&ReadBlockingStates::HasData, move || {
+    read.wait_for_slot_to_completely_execute(&ReadBlockingStates::WasJustCompleted, move || {
       /* panic!("wow?2?"); */
       if !io_object.read_has_any() {
         write.notify_all_of_new_state(|_| {
@@ -271,7 +273,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
       assert!(all_bytes_read <= byte_slice.len());
 
       if all_bytes_read == byte_slice.len() {
-        Ok(ReadBlockingStates::HasData)
+        Ok(ReadBlockingStates::WasJustCompleted)
       } else {
         /* NB: We expect that if the read did not fill out our buffer, that the
          * underlying read buffer must then be empty! */

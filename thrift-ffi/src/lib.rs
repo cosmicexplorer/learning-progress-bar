@@ -298,7 +298,7 @@ pub mod user_client {
     /// Load a message of the desired size into the buffer. If that fails,
     #[tracing::instrument]
     fn read(&mut self, byte_slice: &mut [u8]) -> io::Result<usize> {
-      eprintln!("self: {:?} / read: {:?}", &self, &byte_slice);
+      /* eprintln!("self: {:?} / read: {:?}", &self, &byte_slice); */
       self.transport_state.read(byte_slice)
     }
   }
@@ -311,8 +311,9 @@ pub mod user_client {
     /// separate thread of execution. (3) Try to complete all of the writes
     /// that are possible. Return a merged error message of     all errors
     /// writing to the matching other clients.
+    #[tracing::instrument]
     fn write(&mut self, byte_slice: &[u8]) -> io::Result<usize> {
-      eprintln!("self; {:?} / write: {:?}", &self, &byte_slice);
+      /* eprintln!("self; {:?} / write: {:?}", &self, &byte_slice); */
       /* Get clients to write to. */
       let matching_clients = self
         .other_matching_clients()
@@ -639,7 +640,7 @@ pub mod user_client {
   {
     /* The incoming chunk will contain any message(s) from other client(s). */
     let byte_slice: &mut [u8] = unsafe { chunk.as_slice_mut() };
-    dbg!(&byte_slice);
+    /* dbg!(&byte_slice); */
 
     let ret = match UserClientHandle::from_key(handle)
       .get(|c| c.clone().into_sync_buf())

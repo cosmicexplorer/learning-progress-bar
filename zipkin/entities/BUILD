@@ -1,0 +1,9 @@
+cargo_subproject(
+  sources=rglobs('*'),
+  cargo_subprojects=[
+    'coroutines',
+  ],
+  dependencies=[
+    '//:rust-toolchain',
+  ],
+)

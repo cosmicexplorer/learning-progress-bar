@@ -323,19 +323,31 @@ pub mod registration {
     };
   }
 
+  #[repr(C)]
+  pub enum ReturnValue {
+    Success,
+    Error,
+  }
+
   #[no_mangle]
-  pub extern "C" fn set_default_tracing_subscriber() {
+  pub extern "C" fn set_default_tracing_subscriber() -> ReturnValue {
     let subscriber_ref = ZIPKIN_SUBSCRIBER.clone();
     let subscriber_wrapper = SubscriberWrapper {
       inner: subscriber_ref.into_arc(),
     };
-    block_on(set_default_subscriber(subscriber_wrapper)).unwrap();
+    match block_on(set_default_subscriber(subscriber_wrapper)) {
+      Ok(_) => ReturnValue::Success,
+      Err(_) => ReturnValue::Error,
+    }
   }
 
   #[no_mangle]
-  pub extern "C" fn wait_on_flushing() {
+  pub extern "C" fn wait_on_flushing() -> ReturnValue {
     let subscriber = &mut *ZIPKIN_SUBSCRIBER.clone();
-    block_on(subscriber.repeatedly_flush()).unwrap();
+    match block_on(subscriber.repeatedly_flush()) {
+      Ok(_) => ReturnValue::Success,
+      Err(_) => ReturnValue::Error,
+    }
   }
 }
 

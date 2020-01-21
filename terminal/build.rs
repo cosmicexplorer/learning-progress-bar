@@ -49,6 +49,7 @@ fn main() -> Result<(), BindingsCreationError> {
     let mut thrift_output_file = fs::OpenOptions::new()
       .append(true)
       .open("src/streaming_interface.rs")?;
+    #[cfg(feature = "pants-injected")]
     let mut injected_thrift_file = fs::OpenOptions::new()
       .read(true)
       .open("streaming_interface.rs")?;
@@ -77,5 +78,19 @@ fn main() -> Result<(), BindingsCreationError> {
     bindings_file: PathBuf::from("generated_headers/thrift-ffi-bindings.h"),
     config_file: thrift_ffi_dir.clone().join("cbindgen.toml"),
     env,
-  })
+  })?;
+
+  #[cfg(feature = "pants-injected")]
+  let zipkin_dir = PathBuf::from("zipkin");
+  #[cfg(not(feature = "pants-injected"))]
+  let zipkin_dir = PathBuf::from("../zipkin");
+  generate(GenerateBindingsRequest {
+    crate_dir: zipkin_dir.clone(),
+    bindings_file: PathBuf::from("generated_headers/zipkin-bindings.h"),
+    config_file: zipkin_dir.clone().join("cbindgen.toml"),
+    env,
+  })?;
+
+
+  Ok(())
 }

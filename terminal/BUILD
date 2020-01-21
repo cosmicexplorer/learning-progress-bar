@@ -3,12 +3,17 @@ cargo_subproject(
   generated_resources=[
     'generated_headers/terminal-wrapper-bindings.h',
     'generated_headers/thrift-ffi-bindings.h',
+    'generated_headers/zipkin-bindings.h',
   ],
   features=['cffi-compatible'],
   cargo_output_file='libterminal_wrapper.dylib',
   sources=rglobs('*'),
   cargo_subprojects=[
     'thrift-ffi',
+    'zipkin',
+    'zipkin/connect',
+    'coroutines',
+    'zipkin/entities',
   ],
   dependencies=[
     '//:rust-toolchain',

@@ -1,0 +1,12 @@
+cargo_subproject(
+  sources=rglobs('*'),
+  cargo_subprojects=[
+    'zipkin/connect',
+    'coroutines',
+    'zipkin/entities',
+  ],
+  dependencies=[
+    '//:rust-toolchain',
+    'terminal/thrift:rust',
+  ],
+)

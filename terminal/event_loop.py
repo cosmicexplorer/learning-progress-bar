@@ -61,6 +61,13 @@ def bootstrap_thrift_ffi() -> FFI:
   ).decode('utf-8')
   ffi.cdef(terminal_wrapper_bindings)
 
+  zipkin_bindings = get_resource_string(
+    generated_headers,
+    Path('zipkin-bindings.h'),
+  ).decode('utf-8')
+  ffi.cdef(zipkin_bindings)
+
+
   lib = open_dylib_resource(
     ffi,
     get_resource_string(target.debug, Path('libterminal_wrapper.dylib')))
@@ -382,6 +389,9 @@ def main() -> None:
     topic=topic[0],
     read_capacity=capacity,
     write_capacity=capacity)
+
+  # lib.wait_on_flushing()
+  # import sys; sys.exit()
 
   # This "Base" class merely returns any transport it's provided. Since we are using in-memory
   # buffers, it seems like a good idea for now to avoid further buffering to get closer to native
