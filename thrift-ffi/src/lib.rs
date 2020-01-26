@@ -802,24 +802,24 @@ mod tests {
       let message1 = "asdf".as_bytes();
       let (user1, mut user_client1, mut chunk1) =
         create_new_user_with_client_for_topic(capacity, topic, kind, &message1);
+      let mut buf1 = user_client1.extract_mut::<_, UserClientHandleError, _>(|c| {
+        Ok(c.clone().into_sync_buf())
+      })?;
 
       /* NB: Using the same topic!! */
       let message2 = "fdsa!!!".as_bytes();
       let (user2, mut user_client2, mut chunk2) =
         create_new_user_with_client_for_topic(capacity, topic, kind, &message2);
+      let mut buf2 = user_client2.extract_mut::<_, UserClientHandleError, _>(|c| {
+        Ok(c.clone().into_sync_buf())
+      })?;
 
       let byte_slice1 = unsafe { std::slice::from_raw_parts(chunk1.ptr, chunk1.len as usize) };
-      let written1 = user_client1.extract_mut::<_, UserClientHandleError, _>(|c| {
-        let mut buf = c.clone().into_sync_buf();
-        buf.write(byte_slice1).map_err(|e| e.into())
-      })?;
+      let written1 = buf1.write(byte_slice1)?;
       assert_eq!(written1, chunk1.len as usize);
 
       let byte_slice2 = unsafe { std::slice::from_raw_parts(chunk2.ptr, chunk2.len as usize) };
-      let written2 = user_client2.extract_mut::<_, UserClientHandleError, _>(|c| {
-        let mut buf = c.clone().into_sync_buf();
-        buf.write(byte_slice2).map_err(|e| e.into())
-      })?;
+      let written2 = buf2.write(byte_slice2)?;
       assert_eq!(written2, chunk2.len as usize);
 
       /* Zero out the original message so we can ensure that it is read back in
@@ -833,19 +833,13 @@ mod tests {
        * ThriftChunk that we pass in to the function. */
       chunk1.len = message2.len() as u64;
       let byte_slice1 = unsafe { std::slice::from_raw_parts_mut(chunk1.ptr, chunk1.len as usize) };
-      let read1 = user_client1.extract_mut::<_, UserClientHandleError, _>(|c| {
-        let mut buf = c.clone().into_sync_buf();
-        buf.read(byte_slice1).map_err(|e| e.into())
-      })?;
+      let read1 = buf1.read(byte_slice1)?;
       assert_eq!(read1, written2);
 
       /* Same for the other user client. */
       chunk2.len = message1.len() as u64;
       let byte_slice2 = unsafe { std::slice::from_raw_parts_mut(chunk2.ptr, chunk2.len as usize) };
-      let read2 = user_client2.extract_mut::<_, UserClientHandleError, _>(|c| {
-        let mut buf = c.clone().into_sync_buf();
-        buf.read(byte_slice2).map_err(|e| e.into())
-      })?;
+      let read2 = buf2.read(byte_slice2)?;
       assert_eq!(read2, written1);
 
       /* /\* Flush the writes!! *\/ */

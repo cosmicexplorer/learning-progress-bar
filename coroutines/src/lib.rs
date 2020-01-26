@@ -147,7 +147,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
     SynchronizedReadWriteBuffer {
       io_object,
       read: StateVar::new(ReadBlockingStates::NeedsData),
-      write: StateVar::new(WriteBlockingStates::Ready),
+      write: StateVar::new(WriteBlockingStates::FinishedWrite),
     }
   }
 
@@ -174,9 +174,10 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
             assert!(!io_object.read_has_any());
             io_object.copy_write_buffer_to_read_buffer();
             assert!(io_object.read_has_any());
-            ReadBlockingStates::HasData
+            ReadBlockingStates::WasJustCompleted
           },
-          x => *x,
+          ReadBlockingStates::HasData => ReadBlockingStates::WasJustCompleted,
+          ReadBlockingStates::WasJustCompleted => ReadBlockingStates::WasJustCompleted,
         });
         if io_object.write_is_full() {
           return Ok(WriteBlockingStates::Blocked);
@@ -184,7 +185,7 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
       }
 
       if byte_slice.is_empty() {
-        return Ok(WriteBlockingStates::Ready);
+        return Ok(WriteBlockingStates::FinishedWrite);
       }
 
       let written_new = io_object.write(&byte_slice[written..])?;
@@ -203,67 +204,59 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
     })
   }
 
-  ///
-  /// Corresponds to 'read'.
-  fn read_until_complete(&mut self, byte_slice: &mut [u8]) -> Result<(), CoroutineError> {
-    /* eprintln!("read_until_complete: {:?}", &self); */
-    let SynchronizedReadWriteBuffer {
-      ref read,
-      ref write,
-      ref mut io_object,
-    } = self;
-
-    /* Ensure that if we come into this function and the read buffer is empty, we
-     * at least try to copy over the write buffer. This lets us avoid
-     * blocking at all if there is enough data in the write buffer to satisfy
-     * the read bytes request. */
-    read.notify_all_of_new_state(|read_state| match read_state {
-      ReadBlockingStates::NeedsData => {
-        assert!(!io_object.read_has_any());
-        write.notify_all_of_new_state(|_| {
-          /* panic!("wow?1?"); */
-          assert!(!io_object.read_has_any());
-          io_object.copy_write_buffer_to_read_buffer();
-          WriteBlockingStates::Ready
-        });
-        if io_object.read_has_any() {
-          ReadBlockingStates::HasData
-        } else {
-          ReadBlockingStates::NeedsData
-        }
-      },
-      ReadBlockingStates::HasData => {
-        /* panic!("wow?3?"); */
-        if !io_object.read_has_any() {
-          write.notify_all_of_new_state(|_| {
-            assert!(!io_object.read_has_any());
-            io_object.copy_write_buffer_to_read_buffer();
-            WriteBlockingStates::Ready
-          });
-          if !io_object.read_has_any() {
-            return ReadBlockingStates::NeedsData;
-          }
-        }
-        ReadBlockingStates::HasData
-      },
-    });
-
-    let mut all_bytes_read: usize = 0;
-    read.wait_for_slot_to_completely_execute(&ReadBlockingStates::WasJustCompleted, move || {
-      /* panic!("wow?2?"); */
+  /* We should be able to take in an &mut self, but that implies (necessarily) a mutable reference
+   * to the "read" state var, which causes aliasing issues in .read_until_complete(). This method
+   * only requires immutable references to operate on the state vars, of which rust allows multiple
+   * at once. */
+  fn opportunistically_transfer_write_to_read(
+    read: &StateVar<ReadBlockingStates>,
+    write: &StateVar<WriteBlockingStates>,
+    io_object: &mut IoObject,
+  ) -> Result<(), CoroutineError>
+  {
+    /* notify_all_of_new_state() just returns (), not a Result! */
+    read.notify_all_of_new_state(|prev_state| {
       if !io_object.read_has_any() {
         write.notify_all_of_new_state(|_| {
           assert!(!io_object.read_has_any());
           io_object.copy_write_buffer_to_read_buffer();
-          WriteBlockingStates::Ready
+          WriteBlockingStates::FinishedWrite
         });
-        if !io_object.read_has_any() {
-          return Ok(ReadBlockingStates::NeedsData);
+        if io_object.read_has_any() {
+          ReadBlockingStates::WasJustCompleted
+        } else {
+          ReadBlockingStates::NeedsData
         }
+      } else {
+        *prev_state
       }
+    });
+
+    Ok(())
+  }
+
+  ///
+  /// Corresponds to 'read'.
+  fn read_until_complete(&mut self, byte_slice: &mut [u8]) -> Result<(), CoroutineError> {
+    /* eprintln!("read_until_complete: {:?}", &self); */
+
+    let SynchronizedReadWriteBuffer {
+      ref read,
+      ref write,
+      ref mut io_object,
+      ..
+    } = self;
+    /* Ensure that if we come into this function and the read buffer is empty, we
+     * at least try to copy over the write buffer. This lets us avoid
+     * blocking at all if there is enough data in the write buffer to satisfy
+     * the read bytes request. */
+    Self::opportunistically_transfer_write_to_read(read, write, io_object)?;
+
+    let mut all_bytes_read: usize = 0;
+    read.wait_for_slot_to_completely_execute(&ReadBlockingStates::WasJustCompleted, move || {
 
       if byte_slice.is_empty() {
-        return Ok(ReadBlockingStates::HasData);
+        return Ok(ReadBlockingStates::WasJustCompleted);
       }
 
       let read_new = io_object.read(&mut byte_slice[all_bytes_read..])?;
