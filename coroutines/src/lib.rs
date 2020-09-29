@@ -1,6 +1,6 @@
 /* NB: Any nightly-only features go here >=]! */
 #![feature(get_mut_unchecked)]
-#![deny(warnings)]
+/* #![deny(warnings)] */
 // Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be
 // copied and pasted across crates, but there doesn't appear to be a way to include inner attributes
 // from a common source.
@@ -246,14 +246,16 @@ impl<IoObject: ReadWriteBufferable+Debug> SynchronizedReadWriteBuffer<IoObject> 
       ref mut io_object,
       ..
     } = self;
-    /* Ensure that if we come into this function and the read buffer is empty, we
-     * at least try to copy over the write buffer. This lets us avoid
-     * blocking at all if there is enough data in the write buffer to satisfy
-     * the read bytes request. */
+
+    /* Ensure that if we come into this function and the read buffer is empty, we at least try to
+     * copy over the write buffer. This lets us avoid blocking at all if there is enough data in the
+     * write buffer to satisfy the read bytes request. */
     Self::opportunistically_transfer_write_to_read(read, write, io_object)?;
 
     let mut all_bytes_read: usize = 0;
     read.wait_for_slot_to_completely_execute(&ReadBlockingStates::WasJustCompleted, move || {
+      panic!("asdf");
+      Self::opportunistically_transfer_write_to_read(read, write, io_object)?;
 
       if byte_slice.is_empty() {
         return Ok(ReadBlockingStates::WasJustCompleted);
