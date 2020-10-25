@@ -1,5 +1,16 @@
 #+TITLE: README
 #+STARTUP: showall
 
+/A project to guess how much time is left for a process to complete, based upon prior knowledge of its runs./
+
+* Goals
+1. Track stdout/stderr, and provide neat methods to stream it places.
+   - Possibly have an API that allows for collating the streaming results from /multiple/ processes invoked this way?
+   - /Make this part very fast too./
+2. Provide a ~pv~-like progress bar, using unsupervised statistical inference to infer what's going to happen next and how long it's going to take.
+3. ???
+   - We could also consider interacting with other tracing systems like ~strace~ to bring to bear on our inference.
+
+
 * LICENSE
 [[file:./LICENSE][GPL v3.0 or any later version]].
