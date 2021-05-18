@@ -11,6 +11,8 @@
 3. ???
    - We could also consider interacting with other tracing systems like ~strace~ to bring to bear on our inference.
 
+* Also See
+- [[https://github.com/sharkdp/hyperfine][hyperfine]]
 
 * LICENSE
 [[file:./LICENSE][GPL v3.0 or any later version]].
