@@ -1,0 +1,15 @@
+[package]
+name = "connect"
+version = "0.1.0"
+authors = ["Danny McClanahan <1305167+cosmicexplorer@users.noreply.github.com>"]
+edition = "2018"
+
+[dependencies]
+async-trait = "0.1.7"
+entities = { path = "../../zipkin/entities" }
+# entities = { path = "zipkin/entities" }
+reqwest = "0.10.1"
+serde_json = "1.0"
+tokio = "0.2.9"
+coroutines = { path = "../../coroutines" }
+# coroutines = { path = "coroutines" }

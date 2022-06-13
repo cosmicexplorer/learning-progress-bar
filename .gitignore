@@ -1,0 +1,9 @@
+/.pants.d/
+/.pants.workdir.file_lock
+/logs/
+/.mypy_cache/
+/.pids/
+/.cache/
+__pycache__/
+/dist/
+target/

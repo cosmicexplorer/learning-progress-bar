@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+exec "${OS_PANTS_SRC}/pants" "$@"
