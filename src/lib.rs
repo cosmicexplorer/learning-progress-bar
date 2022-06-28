@@ -115,7 +115,37 @@ impl StdioLineHandler {
   }
 }
 
-/// Execute a process and convert its outputs into events.
+struct StdioChunkHandler {
+  pub sender:
+    async_channel::Sender<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
+}
+
+impl StdioChunkHandler {
+  pub async fn handle_chunk(&self, chunk: stream::StdioChunk) -> Result<(), exe::CommandError> {
+    self
+      .sender
+      .send(Emission::Intermediate(chunk))
+      .await
+      .expect("channel should not be closed");
+    Ok(())
+  }
+
+  pub async fn handle_end(self, result: Result<(), exe::CommandErrorWrapper>) {
+    let Self { sender, .. } = self;
+    match result {
+      Ok(()) => sender
+        .send(Emission::Final(Ok(())))
+        .await
+        .expect("should not be closed"),
+      Err(e) => sender
+        .send(Emission::Final(Err(e)))
+        .await
+        .expect("should not be closed"),
+    }
+  }
+}
+
+/// Execute a process and convert its output lines into string events.
 ///
 ///```
 /// # fn main() -> Result<(), learning_progress_bar::Error> {
@@ -131,7 +161,7 @@ impl StdioLineHandler {
 /// };
 ///
 /// let stamper = EventStamper::now();
-/// let mut process = BasicProcess::initiate(command).await?;
+/// let mut process = StringProcess::initiate(command).await?;
 /// let time1 = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Intermediate(line), timestamp } => {
 ///     assert_eq!(line, stream::StdioLine::Out("hey".to_string()));
@@ -153,12 +183,12 @@ impl StdioLineHandler {
 /// # }) // async
 /// # }
 ///```
-pub struct BasicProcess {
+pub struct StringProcess {
   receiver:
     async_channel::Receiver<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
 }
 
-impl BasicProcess {
+impl StringProcess {
   /// Invoke `command`, read its outputs with [`StdioLineHandler`], then check its exit status, all
   /// in a background task from [`task::spawn`].
   ///
@@ -180,8 +210,83 @@ impl BasicProcess {
 }
 
 #[async_trait]
-impl Emitter for BasicProcess {
+impl Emitter for StringProcess {
   type E = stream::StdioLine;
+  type F = Result<(), exe::CommandErrorWrapper>;
+
+  async fn emit(&mut self) -> Emission<Self::E, Self::F> {
+    let Self { receiver } = self;
+    receiver.recv().await.expect("channel should not be closed")
+  }
+}
+
+/// Execute a process and convert its outputs into byte events.
+///
+///```
+/// # fn main() -> Result<(), learning_progress_bar::Error> {
+/// # tokio_test::block_on(async {
+/// use std::path::PathBuf;
+/// use super_process::{fs, exe, stream};
+/// use learning_progress_bar::*;
+///
+/// let command = exe::Command {
+///   exe: exe::Exe(fs::File(PathBuf::from("echo"))),
+///   argv: ["hey"].as_ref().into(),
+///   ..Default::default()
+/// };
+///
+/// let stamper = EventStamper::now();
+/// let mut process = BytesProcess::initiate(command).await?;
+/// let time1 = match stamper.emit_stamped(&mut process).await {
+///   Event { emission: Emission::Intermediate(line), timestamp } => {
+///     assert_eq!(line, stream::StdioChunk::Out(b"hey\n".to_vec()));
+///     timestamp
+///   },
+///   _ => unreachable!(),
+/// };
+/// assert!(!time1.is_zero());
+/// let time2 = match stamper.emit_stamped(&mut process).await {
+///   Event { emission: Emission::Final(result), timestamp } => {
+///     assert!(result.is_ok());
+///     timestamp
+///   },
+///   _ => unreachable!(),
+/// };
+/// assert!(!time2.is_zero());
+/// assert!(time2 > time1);
+/// # Ok(())
+/// # }) // async
+/// # }
+///```
+pub struct BytesProcess {
+  receiver:
+    async_channel::Receiver<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
+}
+
+impl BytesProcess {
+  /// Invoke `command`, read its outputs with [`StdioLineHandler`], then check its exit status, all
+  /// in a background task from [`task::spawn`].
+  ///
+  /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
+  pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
+    let (sender, receiver) = async_channel::unbounded();
+    let handle = command.invoke_streaming()?;
+
+    task::spawn(async move {
+      let handler = StdioChunkHandler { sender };
+      let result = handle
+        .exhaust_byte_streams_and_wait(|x| handler.handle_chunk(x))
+        .await;
+      handler.handle_end(result).await;
+    });
+
+    Ok(Self { receiver })
+  }
+}
+
+#[async_trait]
+impl Emitter for BytesProcess {
+  type E = stream::StdioChunk;
   type F = Result<(), exe::CommandErrorWrapper>;
 
   async fn emit(&mut self) -> Emission<Self::E, Self::F> {
