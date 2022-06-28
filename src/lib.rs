@@ -25,8 +25,12 @@
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
 
-use learning_progress_bar::X;
+pub const X: usize = 3;
 
-fn main() {
-  println!("hello, world! {}", X);
+#[cfg(test)]
+mod test {
+  #[test]
+  fn it_works() {
+    assert_eq!(4, 2 + 2);
+  }
 }
