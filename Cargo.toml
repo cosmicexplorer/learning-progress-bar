@@ -10,6 +10,13 @@ edition                 = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# async-process = "1.3.0"
-# async-stream = "0.3.3"
-# async-trait = "0.1.41"
+async-channel           = "1.6.1"
+async-trait             = "0.1.41"
+displaydoc              = { git = "https://github.com/yaahc/displaydoc", rev = "7159bb5c9d41ca3c7ccf04ae86ae3acb0ea12a27" }
+super-process           = { git = "https://github.com/cosmicexplorer/super-process", rev = "8c32c0110869a0552a6ccec06e3c8f03f8d6a83a" }
+# super-process           = { path = "/home/cosmicexplorer/tools/super-process" }
+thiserror               = "1.0.30"
+tokio                   = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+tokio-test              = "0.4.2"
