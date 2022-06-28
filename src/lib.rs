@@ -26,16 +26,9 @@
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
 
-use super_process::{
-  exe,
-  stream::{self, Streamable},
-};
-
-use async_channel;
 use async_trait::async_trait;
 use displaydoc::Display;
 use thiserror::Error;
-use tokio::task;
 
 use std::time;
 
@@ -85,80 +78,6 @@ impl EventStamper {
   }
 }
 
-pub struct StdioLineHandler {
-  sender: async_channel::Sender<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
-}
-
-impl StdioLineHandler {
-  pub fn new(
-    sender: async_channel::Sender<
-      Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>,
-    >,
-  ) -> Self {
-    Self { sender }
-  }
-
-  pub async fn handle_line(&self, line: stream::StdioLine) -> Result<(), exe::CommandError> {
-    self
-      .sender
-      .send(Emission::Intermediate(line))
-      .await
-      .expect("channel should not be closed");
-    Ok(())
-  }
-
-  pub async fn handle_end(self, result: Result<(), exe::CommandErrorWrapper>) {
-    let Self { sender, .. } = self;
-    match result {
-      Ok(()) => sender
-        .send(Emission::Final(Ok(())))
-        .await
-        .expect("should not be closed"),
-      Err(e) => sender
-        .send(Emission::Final(Err(e)))
-        .await
-        .expect("should not be closed"),
-    }
-  }
-}
-
-pub struct StdioChunkHandler {
-  sender: async_channel::Sender<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
-}
-
-impl StdioChunkHandler {
-  pub fn new(
-    sender: async_channel::Sender<
-      Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>,
-    >,
-  ) -> Self {
-    Self { sender }
-  }
-
-  pub async fn handle_chunk(&self, chunk: stream::StdioChunk) -> Result<(), exe::CommandError> {
-    self
-      .sender
-      .send(Emission::Intermediate(chunk))
-      .await
-      .expect("channel should not be closed");
-    Ok(())
-  }
-
-  pub async fn handle_end(self, result: Result<(), exe::CommandErrorWrapper>) {
-    let Self { sender, .. } = self;
-    match result {
-      Ok(()) => sender
-        .send(Emission::Final(Ok(())))
-        .await
-        .expect("should not be closed"),
-      Err(e) => sender
-        .send(Emission::Final(Err(e)))
-        .await
-        .expect("should not be closed"),
-    }
-  }
-}
-
 /// Execute a process and convert its output lines into string events.
 ///
 ///```
@@ -166,7 +85,7 @@ impl StdioChunkHandler {
 /// # tokio_test::block_on(async {
 /// use std::path::PathBuf;
 /// use super_process::{fs, exe, stream};
-/// use learning_progress_bar::*;
+/// use learning_progress_bar::{*, lines::*};
 ///
 /// let command = exe::Command {
 ///   exe: exe::Exe(fs::File(PathBuf::from("echo"))),
@@ -197,40 +116,82 @@ impl StdioChunkHandler {
 /// # }) // async
 /// # }
 ///```
-pub struct StringProcess {
-  receiver:
-    async_channel::Receiver<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
-}
+pub mod lines {
+  use super::*;
+  use super_process::{
+    exe,
+    stream::{self, Streamable},
+  };
 
-impl StringProcess {
-  /// Invoke `command`, read its outputs with [`StdioLineHandler`], then check its exit status, all
-  /// in a background task from [`task::spawn`].
-  ///
-  /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
-  pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
-    let (sender, receiver) = async_channel::unbounded();
-    let handle = command.invoke_streaming()?;
+  use async_channel;
+  use tokio::task;
 
-    task::spawn(async move {
-      let handler = StdioLineHandler::new(sender);
-      let result = handle
-        .exhaust_string_streams_and_wait(|x| handler.handle_line(x))
-        .await;
-      handler.handle_end(result).await;
-    });
-
-    Ok(Self { receiver })
+  struct StdioLineHandler {
+    pub sender:
+      async_channel::Sender<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
   }
-}
 
-#[async_trait]
-impl Emitter for StringProcess {
-  type E = stream::StdioLine;
-  type F = Result<(), exe::CommandErrorWrapper>;
+  impl StdioLineHandler {
+    pub async fn handle_line(&self, line: stream::StdioLine) -> Result<(), exe::CommandError> {
+      self
+        .sender
+        .send(Emission::Intermediate(line))
+        .await
+        .expect("channel should not be closed");
+      Ok(())
+    }
 
-  async fn emit(&mut self) -> Emission<Self::E, Self::F> {
-    let Self { receiver } = self;
-    receiver.recv().await.expect("channel should not be closed")
+    pub async fn handle_end(self, result: Result<(), exe::CommandErrorWrapper>) {
+      let Self { sender, .. } = self;
+      match result {
+        Ok(()) => sender
+          .send(Emission::Final(Ok(())))
+          .await
+          .expect("should not be closed"),
+        Err(e) => sender
+          .send(Emission::Final(Err(e)))
+          .await
+          .expect("should not be closed"),
+      }
+    }
+  }
+
+
+  pub struct StringProcess {
+    receiver:
+      async_channel::Receiver<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
+  }
+
+  impl StringProcess {
+    /// Invoke `command`, read its outputs by line, then check its exit status, all in a background
+    /// task from [`task::spawn`].
+    ///
+    /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
+    pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
+      let (sender, receiver) = async_channel::unbounded();
+      let handle = command.invoke_streaming()?;
+
+      task::spawn(async move {
+        let handler = StdioLineHandler { sender };
+        let result = handle
+          .exhaust_string_streams_and_wait(|x| handler.handle_line(x))
+          .await;
+        handler.handle_end(result).await;
+      });
+
+      Ok(Self { receiver })
+    }
+  }
+
+  #[async_trait]
+  impl Emitter for StringProcess {
+    type E = stream::StdioLine;
+    type F = Result<(), exe::CommandErrorWrapper>;
+
+    async fn emit(&mut self) -> Emission<Self::E, Self::F> {
+      let Self { receiver } = self;
+      receiver.recv().await.expect("channel should not be closed")
+    }
   }
 }
 
@@ -241,7 +202,7 @@ impl Emitter for StringProcess {
 /// # tokio_test::block_on(async {
 /// use std::path::PathBuf;
 /// use super_process::{fs, exe, stream};
-/// use learning_progress_bar::*;
+/// use learning_progress_bar::{*, bytes::*};
 ///
 /// let command = exe::Command {
 ///   exe: exe::Exe(fs::File(PathBuf::from("echo"))),
@@ -272,40 +233,81 @@ impl Emitter for StringProcess {
 /// # }) // async
 /// # }
 ///```
-pub struct BytesProcess {
-  receiver:
-    async_channel::Receiver<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
-}
+pub mod bytes {
+  use super::*;
+  use super_process::{
+    exe,
+    stream::{self, Streamable},
+  };
 
-impl BytesProcess {
-  /// Invoke `command`, read its outputs with [`StdioChunkHandler`], then check its exit status, all
-  /// in a background task from [`task::spawn`].
-  ///
-  /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
-  pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
-    let (sender, receiver) = async_channel::unbounded();
-    let handle = command.invoke_streaming()?;
+  use async_channel;
+  use tokio::task;
 
-    task::spawn(async move {
-      let handler = StdioChunkHandler::new(sender);
-      let result = handle
-        .exhaust_byte_streams_and_wait(|x| handler.handle_chunk(x))
-        .await;
-      handler.handle_end(result).await;
-    });
-
-    Ok(Self { receiver })
+  struct StdioChunkHandler {
+    pub sender:
+      async_channel::Sender<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
   }
-}
 
-#[async_trait]
-impl Emitter for BytesProcess {
-  type E = stream::StdioChunk;
-  type F = Result<(), exe::CommandErrorWrapper>;
+  impl StdioChunkHandler {
+    pub async fn handle_chunk(&self, chunk: stream::StdioChunk) -> Result<(), exe::CommandError> {
+      self
+        .sender
+        .send(Emission::Intermediate(chunk))
+        .await
+        .expect("channel should not be closed");
+      Ok(())
+    }
 
-  async fn emit(&mut self) -> Emission<Self::E, Self::F> {
-    let Self { receiver } = self;
-    receiver.recv().await.expect("channel should not be closed")
+    pub async fn handle_end(self, result: Result<(), exe::CommandErrorWrapper>) {
+      let Self { sender, .. } = self;
+      match result {
+        Ok(()) => sender
+          .send(Emission::Final(Ok(())))
+          .await
+          .expect("should not be closed"),
+        Err(e) => sender
+          .send(Emission::Final(Err(e)))
+          .await
+          .expect("should not be closed"),
+      }
+    }
+  }
+
+  pub struct BytesProcess {
+    receiver:
+      async_channel::Receiver<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
+  }
+
+  impl BytesProcess {
+    /// Invoke `command`, read its outputs without decoding to UTF-8, then check its exit status,
+    /// all in a background task from [`task::spawn`].
+    ///
+    /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
+    pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
+      let (sender, receiver) = async_channel::unbounded();
+      let handle = command.invoke_streaming()?;
+
+      task::spawn(async move {
+        let handler = StdioChunkHandler { sender };
+        let result = handle
+          .exhaust_byte_streams_and_wait(|x| handler.handle_chunk(x))
+          .await;
+        handler.handle_end(result).await;
+      });
+
+      Ok(Self { receiver })
+    }
+  }
+
+  #[async_trait]
+  impl Emitter for BytesProcess {
+    type E = stream::StdioChunk;
+    type F = Result<(), exe::CommandErrorWrapper>;
+
+    async fn emit(&mut self) -> Emission<Self::E, Self::F> {
+      let Self { receiver } = self;
+      receiver.recv().await.expect("channel should not be closed")
+    }
   }
 }
 
