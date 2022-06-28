@@ -85,12 +85,12 @@ impl EventStamper {
   }
 }
 
-struct StdioHandler {
+struct StdioLineHandler {
   pub sender:
     async_channel::Sender<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
 }
 
-impl StdioHandler {
+impl StdioLineHandler {
   pub async fn handle_line(&self, line: stream::StdioLine) -> Result<(), exe::CommandError> {
     self
       .sender
@@ -159,14 +159,18 @@ pub struct BasicProcess {
 }
 
 impl BasicProcess {
+  /// Invoke `command`, read its outputs with [`StdioLineHandler`], then check its exit status, all
+  /// in a background task from [`task::spawn`].
+  ///
+  /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
   pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
     let (sender, receiver) = async_channel::unbounded();
     let handle = command.invoke_streaming()?;
 
     task::spawn(async move {
-      let handler = StdioHandler { sender };
+      let handler = StdioLineHandler { sender };
       let result = handle
-        .exhaust_output_streams_and_wait(|x| handler.handle_line(x))
+        .exhaust_string_streams_and_wait(|x| handler.handle_line(x))
         .await;
       handler.handle_end(result).await;
     });
