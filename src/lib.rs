@@ -85,12 +85,19 @@ impl EventStamper {
   }
 }
 
-struct StdioLineHandler {
-  pub sender:
-    async_channel::Sender<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
+pub struct StdioLineHandler {
+  sender: async_channel::Sender<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
 }
 
 impl StdioLineHandler {
+  pub fn new(
+    sender: async_channel::Sender<
+      Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>,
+    >,
+  ) -> Self {
+    Self { sender }
+  }
+
   pub async fn handle_line(&self, line: stream::StdioLine) -> Result<(), exe::CommandError> {
     self
       .sender
@@ -115,12 +122,19 @@ impl StdioLineHandler {
   }
 }
 
-struct StdioChunkHandler {
-  pub sender:
-    async_channel::Sender<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
+pub struct StdioChunkHandler {
+  sender: async_channel::Sender<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
 }
 
 impl StdioChunkHandler {
+  pub fn new(
+    sender: async_channel::Sender<
+      Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>,
+    >,
+  ) -> Self {
+    Self { sender }
+  }
+
   pub async fn handle_chunk(&self, chunk: stream::StdioChunk) -> Result<(), exe::CommandError> {
     self
       .sender
@@ -198,7 +212,7 @@ impl StringProcess {
     let handle = command.invoke_streaming()?;
 
     task::spawn(async move {
-      let handler = StdioLineHandler { sender };
+      let handler = StdioLineHandler::new(sender);
       let result = handle
         .exhaust_string_streams_and_wait(|x| handler.handle_line(x))
         .await;
@@ -264,7 +278,7 @@ pub struct BytesProcess {
 }
 
 impl BytesProcess {
-  /// Invoke `command`, read its outputs with [`StdioLineHandler`], then check its exit status, all
+  /// Invoke `command`, read its outputs with [`StdioChunkHandler`], then check its exit status, all
   /// in a background task from [`task::spawn`].
   ///
   /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
@@ -273,7 +287,7 @@ impl BytesProcess {
     let handle = command.invoke_streaming()?;
 
     task::spawn(async move {
-      let handler = StdioChunkHandler { sender };
+      let handler = StdioChunkHandler::new(sender);
       let result = handle
         .exhaust_byte_streams_and_wait(|x| handler.handle_chunk(x))
         .await;
