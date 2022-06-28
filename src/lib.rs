@@ -45,11 +45,6 @@ pub enum Error {
   Command(#[from] super_process::exe::CommandErrorWrapper),
 }
 
-pub trait Event {
-  type Timestamp;
-  fn timestamp(&self) -> &Self::Timestamp;
-}
-
 #[derive(Debug)]
 pub enum Emission<E, F> {
   Intermediate(E),
@@ -57,42 +52,49 @@ pub enum Emission<E, F> {
 }
 
 #[async_trait]
-pub trait EventEmitter {
-  type E: Event;
+pub trait Emitter {
+  type E;
   type F;
   async fn emit(&mut self) -> Emission<Self::E, Self::F>;
 }
 
 #[derive(Debug)]
-pub struct StdoutEvent {
+pub struct Event<E, F> {
   pub timestamp: time::Duration,
-  pub line: stream::StdioLine,
+  pub emission: Emission<E, F>,
 }
 
-impl Event for StdoutEvent {
-  type Timestamp = time::Duration;
-
-  fn timestamp(&self) -> &Self::Timestamp { &self.timestamp }
-}
-
-struct EventStamper {
-  pub start_time: time::Instant,
-  pub sender: async_channel::Sender<Emission<StdoutEvent, Result<(), exe::CommandErrorWrapper>>>,
+pub struct EventStamper {
+  start_time: time::Instant,
 }
 
 impl EventStamper {
-  fn stamp_line(&self, line: stream::StdioLine) -> StdoutEvent {
-    StdoutEvent {
-      timestamp: self.start_time.elapsed(),
-      line,
+  pub fn now() -> Self {
+    Self {
+      start_time: time::Instant::now(),
     }
   }
 
+  pub async fn emit_stamped<E>(&self, emitter: &mut E) -> Event<E::E, E::F>
+  where E: Emitter {
+    let emission = emitter.emit().await;
+    Event {
+      timestamp: self.start_time.elapsed(),
+      emission,
+    }
+  }
+}
+
+struct StdioHandler {
+  pub sender:
+    async_channel::Sender<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
+}
+
+impl StdioHandler {
   pub async fn handle_line(&self, line: stream::StdioLine) -> Result<(), exe::CommandError> {
-    let event = self.stamp_line(line);
     self
       .sender
-      .send(Emission::Intermediate(event))
+      .send(Emission::Intermediate(line))
       .await
       .expect("channel should not be closed");
     Ok(())
@@ -128,40 +130,45 @@ impl EventStamper {
 ///   ..Default::default()
 /// };
 ///
+/// let stamper = EventStamper::now();
 /// let mut process = BasicProcess::initiate(command).await?;
-///
-/// match process.emit().await {
-///   Emission::Intermediate(StdoutEvent { line, .. }) => {
+/// let time1 = match stamper.emit_stamped(&mut process).await {
+///   Event { emission: Emission::Intermediate(line), timestamp } => {
 ///     assert_eq!(line, stream::StdioLine::Out("hey".to_string()));
+///     timestamp
 ///   },
 ///   _ => unreachable!(),
-/// }
-/// match process.emit().await {
-///   Emission::Final(result) => {
+/// };
+/// assert!(!time1.is_zero());
+/// let time2 = match stamper.emit_stamped(&mut process).await {
+///   Event { emission: Emission::Final(result), timestamp } => {
 ///     assert!(result.is_ok());
+///     timestamp
 ///   },
 ///   _ => unreachable!(),
-/// }
+/// };
+/// assert!(!time2.is_zero());
+/// assert!(time2 > time1);
 /// # Ok(())
 /// # }) // async
 /// # }
 ///```
 pub struct BasicProcess {
-  receiver: async_channel::Receiver<Emission<StdoutEvent, Result<(), exe::CommandErrorWrapper>>>,
+  receiver:
+    async_channel::Receiver<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
 }
 
 impl BasicProcess {
   pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
     let (sender, receiver) = async_channel::unbounded();
-    let start_time = time::Instant::now();
     let handle = command.invoke_streaming()?;
 
     task::spawn(async move {
-      let stamper = EventStamper { start_time, sender };
+      let handler = StdioHandler { sender };
       let result = handle
-        .exhaust_output_streams_and_wait(|x| stamper.handle_line(x))
+        .exhaust_output_streams_and_wait(|x| handler.handle_line(x))
         .await;
-      stamper.handle_end(result).await;
+      handler.handle_end(result).await;
     });
 
     Ok(Self { receiver })
@@ -169,8 +176,8 @@ impl BasicProcess {
 }
 
 #[async_trait]
-impl EventEmitter for BasicProcess {
-  type E = StdoutEvent;
+impl Emitter for BasicProcess {
+  type E = stream::StdioLine;
   type F = Result<(), exe::CommandErrorWrapper>;
 
   async fn emit(&mut self) -> Emission<Self::E, Self::F> {
