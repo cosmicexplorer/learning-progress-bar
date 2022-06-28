@@ -1,0 +1,12 @@
+[package]
+name                    = "learning-progress-bar"
+description             = "A progress bar that uses statistics."
+authors                 = ["Danny McClanahan <dmcC2@hypnicjerk.ai>"]
+license                 = "GPL-3.0-or-later"
+repository              = "https://github.com/cosmicexplorer/learning-progress-bar"
+version                 = "0.0.0"
+edition                 = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
