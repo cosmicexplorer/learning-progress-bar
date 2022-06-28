@@ -46,7 +46,9 @@ pub enum Emission<E, F> {
 
 #[async_trait]
 pub trait Emitter {
+  /// The intermediate case.
   type E;
+  /// The final case.
   type F;
   async fn emit(&mut self) -> Emission<Self::E, Self::F>;
 }
