@@ -21,55 +21,58 @@
 //! A progress bar that uses statistics.
 
 #![deny(rustdoc::missing_crate_level_docs)]
-/* #![warn(missing_docs)] */
+#![warn(missing_docs)]
 /* Make all doctests fail if they produce any warnings. */
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
 
 use async_trait::async_trait;
-use displaydoc::Display;
-use thiserror::Error;
 
 use std::time;
 
-#[derive(Debug, Display, Error)]
-pub enum Error {
-  /// command invocation error: {0}
-  Command(#[from] super_process::exe::CommandErrorWrapper),
-}
-
+/// States of a stream.
 #[derive(Debug)]
 pub enum Emission<E, F> {
+  /// The stream is still ongoing, and has yielded a value.
   Intermediate(E),
+  /// The stream has completed, and has yielded a separate type of value.
   Final(F),
 }
 
+/// A stream of values.
 #[async_trait]
 pub trait Emitter {
   /// The intermediate case.
   type E;
   /// The final case.
   type F;
+  /// Yield an intermediate or final value.
   async fn emit(&mut self) -> Emission<Self::E, Self::F>;
 }
 
+/// A timestamped record of an emission.
 #[derive(Debug)]
 pub struct Event<E, F> {
+  /// Time since the [`EventStamper`] was created.
   pub timestamp: time::Duration,
+  /// Emission from stream.
   pub emission: Emission<E, F>,
 }
 
+/// Timestamp values from a stream.
 pub struct EventStamper {
   start_time: time::Instant,
 }
 
 impl EventStamper {
+  /// Create a timestamper measuring against [`time::Instant::now`].
   pub fn now() -> Self {
     Self {
       start_time: time::Instant::now(),
     }
   }
 
+  /// Record a timestamp for a single value from a stream.
   pub async fn emit_stamped<E>(&self, emitter: &mut E) -> Event<E::E, E::F>
   where E: Emitter {
     let emission = emitter.emit().await;
@@ -83,7 +86,7 @@ impl EventStamper {
 /// Execute a process and convert its output lines into string events.
 ///
 ///```
-/// # fn main() -> Result<(), learning_progress_bar::Error> {
+/// # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 /// # tokio_test::block_on(async {
 /// use std::path::PathBuf;
 /// use super_process::{fs, exe, stream};
@@ -159,6 +162,7 @@ pub mod lines {
   }
 
 
+  /// Receive events from lines of stdout/stderr after decoding to UTF-8.
   pub struct StringProcess {
     receiver:
       async_channel::Receiver<Emission<stream::StdioLine, Result<(), exe::CommandErrorWrapper>>>,
@@ -169,7 +173,7 @@ pub mod lines {
     /// task from [`task::spawn`].
     ///
     /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
-    pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
+    pub async fn initiate(command: exe::Command) -> Result<Self, exe::CommandErrorWrapper> {
       let (sender, receiver) = async_channel::unbounded();
       let handle = command.invoke_streaming()?;
 
@@ -200,7 +204,7 @@ pub mod lines {
 /// Execute a process and convert its outputs into byte events.
 ///
 ///```
-/// # fn main() -> Result<(), learning_progress_bar::Error> {
+/// # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 /// # tokio_test::block_on(async {
 /// use std::path::PathBuf;
 /// use super_process::{fs, exe, stream};
@@ -275,6 +279,7 @@ pub mod bytes {
     }
   }
 
+  /// Receive events from byte chunks of stdout/stderr, without decoding into text.
   pub struct BytesProcess {
     receiver:
       async_channel::Receiver<Emission<stream::StdioChunk, Result<(), exe::CommandErrorWrapper>>>,
@@ -285,7 +290,7 @@ pub mod bytes {
     /// all in a background task from [`task::spawn`].
     ///
     /// Events get processed in [`Self::emit`] via an [`async_channel::unbounded`] queue.
-    pub async fn initiate(command: exe::Command) -> Result<Self, Error> {
+    pub async fn initiate(command: exe::Command) -> Result<Self, exe::CommandErrorWrapper> {
       let (sender, receiver) = async_channel::unbounded();
       let handle = command.invoke_streaming()?;
 
