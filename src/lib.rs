@@ -88,12 +88,11 @@ impl EventStamper {
 ///```
 /// # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 /// # tokio_test::block_on(async {
-/// use std::path::PathBuf;
-/// use super_process::{fs, exe, stream};
+/// use super_process::{exe, stream};
 /// use learning_progress_bar::{*, lines::*};
 ///
 /// let command = exe::Command {
-///   exe: exe::Exe(fs::File(PathBuf::from("echo"))),
+///   exe: exe::Exe::from(&"echo"),
 ///   argv: ["hey"].as_ref().into(),
 ///   ..Default::default()
 /// };
@@ -101,18 +100,15 @@ impl EventStamper {
 /// let stamper = EventStamper::now();
 /// let mut process = StringProcess::initiate(command).await?;
 /// let time1 = match stamper.emit_stamped(&mut process).await {
-///   Event { emission: Emission::Intermediate(line), timestamp } => {
-///     assert_eq!(line, stream::StdioLine::Out("hey".to_string()));
+///   Event { emission: Emission::Intermediate(stream::StdioLine::Out(line)), timestamp } => {
+///     assert_eq!(line, "hey");
 ///     timestamp
 ///   },
 ///   _ => unreachable!(),
 /// };
 /// assert!(!time1.is_zero());
 /// let time2 = match stamper.emit_stamped(&mut process).await {
-///   Event { emission: Emission::Final(result), timestamp } => {
-///     assert!(result.is_ok());
-///     timestamp
-///   },
+///   Event { emission: Emission::Final(Ok(())), timestamp } => timestamp,
 ///   _ => unreachable!(),
 /// };
 /// assert!(!time2.is_zero());
@@ -206,12 +202,11 @@ pub mod lines {
 ///```
 /// # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 /// # tokio_test::block_on(async {
-/// use std::path::PathBuf;
-/// use super_process::{fs, exe, stream};
+/// use super_process::{exe, stream};
 /// use learning_progress_bar::{*, bytes::*};
 ///
 /// let command = exe::Command {
-///   exe: exe::Exe(fs::File(PathBuf::from("echo"))),
+///   exe: exe::Exe::from(&"echo"),
 ///   argv: ["hey"].as_ref().into(),
 ///   ..Default::default()
 /// };
@@ -219,18 +214,15 @@ pub mod lines {
 /// let stamper = EventStamper::now();
 /// let mut process = BytesProcess::initiate(command).await?;
 /// let time1 = match stamper.emit_stamped(&mut process).await {
-///   Event { emission: Emission::Intermediate(line), timestamp } => {
-///     assert_eq!(line, stream::StdioChunk::Out(b"hey\n".to_vec()));
+///   Event { emission: Emission::Intermediate(stream::StdioChunk::Out(chunk)), timestamp } => {
+///     assert_eq!(chunk, b"hey\n");
 ///     timestamp
 ///   },
 ///   _ => unreachable!(),
 /// };
 /// assert!(!time1.is_zero());
 /// let time2 = match stamper.emit_stamped(&mut process).await {
-///   Event { emission: Emission::Final(result), timestamp } => {
-///     assert!(result.is_ok());
-///     timestamp
-///   },
+///   Event { emission: Emission::Final(Ok(())), timestamp } => timestamp,
 ///   _ => unreachable!(),
 /// };
 /// assert!(!time2.is_zero());
