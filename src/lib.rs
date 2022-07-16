@@ -101,6 +101,8 @@ impl EventStamper {
 /// let mut process = StringProcess::initiate(command).await?;
 /// let time1 = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Intermediate(stream::StdioLine::Out(line)), timestamp } => {
+///     // Line endings are stripped from each line.
+///     // Currently only '\n' newlines are supported.
 ///     assert_eq!(line, "hey");
 ///     timestamp
 ///   },
@@ -215,6 +217,8 @@ pub mod lines {
 /// let mut process = BytesProcess::initiate(command).await?;
 /// let time1 = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Intermediate(stream::StdioChunk::Out(chunk)), timestamp } => {
+///     // Byte chunks are not split at any consistent length or boundary.
+///     // In this case, we simply assume the entire output is short enough to fit in one chunk.
 ///     assert_eq!(chunk, b"hey\n");
 ///     timestamp
 ///   },
@@ -310,4 +314,5 @@ pub mod bytes {
   }
 }
 
+/// Dummy variable consumed in (empty) `main.rs` as an example of how to import from `lib.rs`.
 pub const X: usize = 3;
