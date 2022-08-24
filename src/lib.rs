@@ -30,6 +30,7 @@ use async_trait::async_trait;
 
 use std::time;
 
+pub mod inference;
 pub mod invocation;
 pub mod record;
 
