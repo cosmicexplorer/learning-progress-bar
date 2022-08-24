@@ -53,6 +53,7 @@ pub trait Emitter {
   async fn emit(&mut self) -> Emission<Self::E, Self::F>;
 }
 
+/// The elapsed time from when a process was invoked to this event being recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimeFromStart(time::Duration);
 
