@@ -55,7 +55,7 @@ pub trait Emitter {
 
 /// The elapsed time from when a process was invoked to this event being recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TimeFromStart(time::Duration);
+pub struct TimeFromStart(pub time::Duration);
 
 /// A timestamped record of an emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

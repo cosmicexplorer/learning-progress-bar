@@ -40,7 +40,7 @@ use async_trait::async_trait;
 ///
 /// let stamper = EventStamper::now();
 /// let mut process = StringProcess::initiate(command).await?;
-/// let time1 = match stamper.emit_stamped(&mut process).await {
+/// let TimeFromStart(time1) = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Intermediate(stream::StdioLine::Out(line)), timestamp } => {
 ///     // Line endings are stripped from each line.
 ///     // Currently only '\n' newlines are supported.
@@ -50,7 +50,7 @@ use async_trait::async_trait;
 ///   _ => unreachable!(),
 /// };
 /// assert!(!time1.is_zero());
-/// let time2 = match stamper.emit_stamped(&mut process).await {
+/// let TimeFromStart(time2) = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Final(Ok(())), timestamp } => timestamp,
 ///   _ => unreachable!(),
 /// };
@@ -156,7 +156,7 @@ pub mod lines {
 ///
 /// let stamper = EventStamper::now();
 /// let mut process = BytesProcess::initiate(command).await?;
-/// let time1 = match stamper.emit_stamped(&mut process).await {
+/// let TimeFromStart(time1) = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Intermediate(stream::StdioChunk::Out(chunk)), timestamp } => {
 ///     // Byte chunks are not split at any consistent length or boundary.
 ///     // In this case, we simply assume the entire output is short enough to fit in one chunk.
@@ -166,7 +166,7 @@ pub mod lines {
 ///   _ => unreachable!(),
 /// };
 /// assert!(!time1.is_zero());
-/// let time2 = match stamper.emit_stamped(&mut process).await {
+/// let TimeFromStart(time2) = match stamper.emit_stamped(&mut process).await {
 ///   Event { emission: Emission::Final(Ok(())), timestamp } => timestamp,
 ///   _ => unreachable!(),
 /// };
