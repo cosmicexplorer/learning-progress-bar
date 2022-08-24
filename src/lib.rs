@@ -31,9 +31,10 @@ use async_trait::async_trait;
 use std::time;
 
 pub mod invocation;
+pub mod record;
 
 /// States of a stream.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Emission<E, F> {
   /// The stream is still ongoing, and has yielded a value.
   Intermediate(E),
@@ -52,11 +53,14 @@ pub trait Emitter {
   async fn emit(&mut self) -> Emission<Self::E, Self::F>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TimeFromStart(time::Duration);
+
 /// A timestamped record of an emission.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Event<E, F> {
   /// Time since the [`EventStamper`] was created.
-  pub timestamp: time::Duration,
+  pub timestamp: TimeFromStart,
   /// Emission from stream.
   pub emission: Emission<E, F>,
 }
@@ -79,7 +83,7 @@ impl EventStamper {
   where E: Emitter {
     let emission = emitter.emit().await;
     Event {
-      timestamp: self.start_time.elapsed(),
+      timestamp: TimeFromStart(self.start_time.elapsed()),
       emission,
     }
   }
