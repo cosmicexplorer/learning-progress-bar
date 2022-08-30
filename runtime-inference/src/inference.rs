@@ -25,7 +25,7 @@ use crate::{
   TimeFromStart,
 };
 
-use std::hash::Hash;
+use std::{hash::Hash, time::Duration};
 
 struct PriorInference {
   timestamp: TimeFromStart,
@@ -46,24 +46,26 @@ where E: Hash+Eq
   pub fn from_history(time_lookup: TimeLookup<E>) -> Self { Self { time_lookup } }
 
   fn historical_infer(&self, emission: E) -> Option<RemainingTime> {
-    self
-      .time_lookup
-      .get(emission)
-      .map(|previous_results| {
-        previous_results.iter().map(|RemainingTime(t)| t).sum() / previous_results.len()
-      })
-      .map(RemainingTime)
+    todo!()
+    /* self */
+    /*   .time_lookup */
+    /*   .get_events() */
+    /*   .get(&emission) */
+    /*   .map(|previous_results| { */
+    /*     previous_results */
+    /*       .iter() */
+    /*       .map(|RemainingTime(t)| t) */
+    /*       .sum::<Duration>() */
+    /*       / (previous_results.len() as u32) */
+    /*   }) */
+    /*   .map(RemainingTime) */
   }
 
-  fn incorporate_prior_inferences(&self, emission: E) -> Option<RemainingTime> {
-    todo!()
-  }
+  fn incorporate_prior_inferences(&self, emission: E) -> Option<RemainingTime> { todo!() }
 
   /// **TODO: figure out a more reliable model for historical inference (which is able to e.g. guess
   /// a bimodal distribution or more for remaining time given some event, e.g. for events that
   /// always occur more than once)! I suspect that once this is done, the path to incorporating
   /// prior results for the same from the same run will be trivial!**
-  pub fn infer_remaining_time(&self, emission: E) -> Option<RemainingTime> {
-    todo!()
-  }
+  pub fn infer_remaining_time(&self, emission: E) -> Option<RemainingTime> { todo!() }
 }

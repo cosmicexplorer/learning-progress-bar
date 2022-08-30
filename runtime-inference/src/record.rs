@@ -25,7 +25,7 @@
 //!```
 //! # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 //! # tokio_test::block_on(async {
-//! use learning_progress_bar::{*, record::*};
+//! use runtime_inference::{*, record::*};
 //! use async_trait::async_trait;
 //! use std::{collections::HashMap, thread, time::Duration};
 //!

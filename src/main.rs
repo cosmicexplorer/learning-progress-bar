@@ -25,8 +25,46 @@
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
 
-use learning_progress_bar::X;
+use clap::{Parser, Subcommand, Args};
+
+/// oh?
+///
+/// oh.
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+  /// a?
+  ///
+  /// b.
+  Wow,
+
+  /// b?
+  ///
+  /// c.
+  ExecuteCli {
+    /// The command line to execute.
+    ///
+    /// asdf?
+    argv: Vec<String>,
+  },
+}
+
+/// A progress bar that uses statistics.
+///
+/// In particular, uses a Hidden Markov Model.
+#[derive(Debug, Parser)]
+#[clap(author, version, about)]
+struct Opts {
+  /// Port to use.
+  ///
+  /// Something else.
+  #[clap(short, long, default_value_t = 11111)]
+  port: usize,
+
+  #[clap(subcommand)]
+  subcommand: CliCommand
+}
 
 fn main() {
-  println!("hello, world! {}", X);
+  let opts = Opts::parse();
+  println!("opts: {:?}", opts);
 }

@@ -90,6 +90,3 @@ impl EventStamper {
     }
   }
 }
-
-/// Dummy variable consumed in (empty) `main.rs` as an example of how to import from `lib.rs`.
-pub const X: usize = 3;

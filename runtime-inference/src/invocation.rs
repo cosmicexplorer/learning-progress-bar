@@ -30,7 +30,7 @@ use async_trait::async_trait;
 /// # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 /// # tokio_test::block_on(async {
 /// use super_process::{exe, stream};
-/// use learning_progress_bar::{*, invocation::lines::*};
+/// use runtime_inference::{*, invocation::lines::*};
 ///
 /// let command = exe::Command {
 ///   exe: exe::Exe::from(&"echo"),
@@ -146,7 +146,7 @@ pub mod lines {
 /// # fn main() -> Result<(), super_process::exe::CommandErrorWrapper> {
 /// # tokio_test::block_on(async {
 /// use super_process::{exe, stream};
-/// use learning_progress_bar::{*, invocation::bytes::*};
+/// use runtime_inference::{*, invocation::bytes::*};
 ///
 /// let command = exe::Command {
 ///   exe: exe::Exe::from(&"echo"),
