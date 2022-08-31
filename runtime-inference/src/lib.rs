@@ -25,6 +25,7 @@
 /* Make all doctests fail if they produce any warnings. */
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
+#![feature(div_duration)]
 
 use async_trait::async_trait;
 

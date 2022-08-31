@@ -25,46 +25,47 @@
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
 
-use clap::{Parser, Subcommand, Args};
+use clap::{Args, Parser, Subcommand};
+
+use std::path::PathBuf;
 
 /// oh?
 ///
 /// oh.
 #[derive(Debug, Subcommand)]
 enum CliCommand {
-  /// a?
-  ///
-  /// b.
-  Wow,
-
   /// b?
   ///
   /// c.
   ExecuteCli {
-    /// The command line to execute.
+    /// Where to write event logging information to.
     ///
-    /// asdf?
+    /// This file will contain a database of timestamped events.
+    #[clap(short, long, parse(from_os_str), default_value = "./output")]
+    log_file: PathBuf,
+
+    /// The command line to execute.
     argv: Vec<String>,
   },
 }
 
 /// A progress bar that uses statistics.
-///
-/// In particular, uses a Hidden Markov Model.
 #[derive(Debug, Parser)]
 #[clap(author, version, about)]
 struct Opts {
-  /// Port to use.
-  ///
-  /// Something else.
-  #[clap(short, long, default_value_t = 11111)]
-  port: usize,
-
   #[clap(subcommand)]
-  subcommand: CliCommand
+  subcommand: CliCommand,
 }
 
 fn main() {
-  let opts = Opts::parse();
-  println!("opts: {:?}", opts);
+  let Opts { subcommand } = Opts::parse();
+  println!("subcommand: {:?}", subcommand);
+
+  match subcommand {
+    CliCommand::ExecuteCli { log_file, argv } => {
+      /* (1) Invoke a timestamped process. */
+      /* (2) Append timestamped events to the log file. */
+      /* (3) Figure out how to incorporate the progress indicator (carriage return?). */
+    },
+  }
 }

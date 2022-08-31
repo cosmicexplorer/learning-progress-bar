@@ -13,6 +13,7 @@ edition                 = "2021"
 async-channel           = "1.7.1"
 async-trait             = "0.1.41"
 displaydoc              = { git = "https://github.com/yaahc/displaydoc", rev = "7159bb5c9d41ca3c7ccf04ae86ae3acb0ea12a27" }
+indexmap                = "1.9.0"
 super-process           = { git = "https://github.com/cosmicexplorer/super-process", rev = "a0b90583b06e9043d62994330e273ee1f16d6e42" }
 # super-process           = { path = "/home/cosmicexplorer/tools/super-process" }
 thiserror               = "1.0.30"

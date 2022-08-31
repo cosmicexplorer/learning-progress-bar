@@ -21,51 +21,182 @@
 //! Perform online inference of remaining time to completion of a process.
 
 use crate::{
-  record::{RemainingTime, TimeLookup},
+  record::{ProgressFraction, RecordLookup},
   TimeFromStart,
 };
 
-use std::{hash::Hash, time::Duration};
+use std::{hash::Hash, time};
 
-struct PriorInference {
-  timestamp: TimeFromStart,
-  inference: RemainingTime,
+#[derive(Debug, Clone)]
+pub struct Weights {
+  weights: Vec<f64>,
 }
 
-struct PreviousEvents {
-  events: Vec<PriorInference>,
+impl Weights {
+  pub fn generate(weights: &[f64]) -> Self {
+    let sum: f64 = weights.iter().sum();
+    if (sum - 1.0).abs() > 1e-10 {
+      panic!("invalid weights vector");
+    }
+    Self {
+      weights: weights.iter().cloned().collect(),
+    }
+  }
+
+  pub fn len(&self) -> usize { self.weights.len() }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ResultDistribution {
+  pub n: usize,
+  pub arithmetic_mean: f64,
+  pub standard_deviation: f64,
+}
+
+impl ResultDistribution {
+  /* FIXME: handle floating point nonsense! see https://en.wikipedia.org/wiki/Standard_deviation#Rapid_calculation_methods */
+  pub fn calculate(values: &[f64]) -> Option<Self> {
+    let n = values.len();
+    if n == 0 {
+      return None;
+    }
+    let sum: f64 = values.iter().sum();
+    let arithmetic_mean: f64 = sum / (n as f64);
+    let squared_deviations_sum: f64 = values
+      .iter()
+      .map(|x| {
+        let dev = x - arithmetic_mean;
+        dev.powi(2)
+      })
+      .sum();
+    let standard_deviation: f64 = (squared_deviations_sum / (n as f64)).sqrt();
+    Some(Self {
+      n,
+      arithmetic_mean,
+      standard_deviation,
+    })
+  }
+
+  pub fn weighted_norm(weights: &Weights, dists: &[Self]) -> Self {
+    /* FIXME: implement weighted normalization!! */
+    if weights.len() != dists.len() {
+      panic!("weights must be aligned with number of dists!");
+    }
+    todo!()
+  }
 }
 
 pub struct Inferer<E: Hash+Eq> {
-  time_lookup: TimeLookup<E>,
+  history: RecordLookup<E>,
 }
 
 impl<E> Inferer<E>
 where E: Hash+Eq
 {
-  pub fn from_history(time_lookup: TimeLookup<E>) -> Self { Self { time_lookup } }
+  pub fn create(history: RecordLookup<E>) -> Self { Self { history } }
 
-  fn historical_infer(&self, emission: E) -> Option<RemainingTime> {
-    todo!()
-    /* self */
-    /*   .time_lookup */
-    /*   .get_events() */
-    /*   .get(&emission) */
-    /*   .map(|previous_results| { */
-    /*     previous_results */
-    /*       .iter() */
-    /*       .map(|RemainingTime(t)| t) */
-    /*       .sum::<Duration>() */
-    /*       / (previous_results.len() as u32) */
-    /*   }) */
-    /*   .map(RemainingTime) */
+  pub fn calculate_progress_distribution(&self, event: &E) -> Option<ResultDistribution> {
+    self
+      .history
+      .extract_progress_history(event)
+      .and_then(|fractions| {
+        let values: Vec<f64> = fractions.iter().map(|ProgressFraction(x)| *x).collect();
+        ResultDistribution::calculate(&values)
+      })
+  }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DecayRate(pub f64);
+
+#[derive(Debug, Copy, Clone)]
+pub struct HistoricalReliance(pub f64);
+
+pub struct OutputInterpolator {
+  /// Output a weighted average of these parameter estimates across the whole runtime.
+  current_run_events: Vec<(TimeFromStart, ResultDistribution)>,
+  /// De-weight estimates by this fraction per second.
+  decay_rate: DecayRate,
+  /// Weight total runtime history by this fraction when composing estimates with current run data.
+  historical_reliance: HistoricalReliance,
+  /// History of total runtimes for the given process, regardless of individual event timestamps.
+  historical_runtimes: Vec<TimeFromStart>,
+}
+
+impl OutputInterpolator {
+  pub fn create<E>(
+    decay_rate: DecayRate,
+    historical_reliance: HistoricalReliance,
+    history: RecordLookup<E>,
+  ) -> Self
+  where
+    E: Hash+Eq,
+  {
+    Self {
+      decay_rate,
+      current_run_events: Vec::new(),
+      historical_reliance,
+      historical_runtimes: history.extract_runtime_history().to_vec(),
+    }
   }
 
-  fn incorporate_prior_inferences(&self, emission: E) -> Option<RemainingTime> { todo!() }
+  pub fn accept(&mut self, cur_time: TimeFromStart, dist: ResultDistribution) {
+    self.current_run_events.push((cur_time, dist));
+  }
 
-  /// **TODO: figure out a more reliable model for historical inference (which is able to e.g. guess
-  /// a bimodal distribution or more for remaining time given some event, e.g. for events that
-  /// always occur more than once)! I suspect that once this is done, the path to incorporating
-  /// prior results for the same from the same run will be trivial!**
-  pub fn infer_remaining_time(&self, emission: E) -> Option<RemainingTime> { todo!() }
+  pub fn sample(&self, cur_time: TimeFromStart) -> Option<ResultDistribution> {
+    let historical_estimate = self.calculate_historical_distribution(cur_time);
+    /* FIXME: implement online estimation with decay rate! */
+    let online_estimate = todo!();
+    let HistoricalReliance(historical_reliance) = self.historical_reliance;
+    historical_estimate.map(|historical_estimate| {
+      let historical_weighting =
+        Weights::generate(&[historical_reliance, 1.0_f64 - historical_reliance]);
+      ResultDistribution::weighted_norm(&historical_weighting, &[
+        historical_estimate,
+        online_estimate,
+      ])
+    })
+  }
+
+  fn calculate_historical_distribution(
+    &self,
+    cur_time: TimeFromStart,
+  ) -> Option<ResultDistribution> {
+    let TimeFromStart(cur_time) = cur_time;
+    let progress_fractions: Vec<f64> = self
+      .historical_runtimes
+      .iter()
+      .map(|TimeFromStart(total_time)| ProgressFraction::duration_fraction(*total_time, cur_time))
+      .map(|ProgressFraction(x)| x)
+      .collect();
+    ResultDistribution::calculate(&progress_fractions[..])
+  }
+}
+
+pub struct InstantaneousProgressEstimate {
+  pub estimated_fraction: ProgressFraction,
+  pub estimated_total_time: time::Duration,
+  pub standard_time_deviation: time::Duration,
+}
+
+impl InstantaneousProgressEstimate {
+  pub fn calculate(cur_time: TimeFromStart, dist: ResultDistribution) -> Self {
+    let TimeFromStart(cur_time) = cur_time;
+    let ResultDistribution {
+      arithmetic_mean: estimated_fraction,
+      standard_deviation,
+      ..
+    } = dist;
+
+    /* Divide by the progress fraction to get a larger number! */
+    let estimated_total_time: time::Duration = cur_time.div_f64(estimated_fraction);
+    let standard_time_deviation: time::Duration = estimated_total_time.mul_f64(standard_deviation);
+
+    Self {
+      estimated_fraction: ProgressFraction(estimated_fraction),
+      estimated_total_time,
+      standard_time_deviation,
+    }
+  }
 }
