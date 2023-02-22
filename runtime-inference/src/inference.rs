@@ -129,6 +129,7 @@ impl OutputInterpolator {
     historical_reliance: HistoricalReliance,
     history: RecordLookup<E>,
   ) -> Self
+  /* FIXME: undo the coupling of RecordLookup to the parameterization of `E` here! */
   where
     E: Hash+Eq,
   {
@@ -144,6 +145,9 @@ impl OutputInterpolator {
     self.current_run_events.push((cur_time, dist));
   }
 
+  /// Produce an estimate of the progress fraction which can be fed to
+  /// [`InstantaneousProgressEstimate::calculate`](InstantaneousProgressEstimate::calculate) to
+  /// print something human-readable for the CLI wrapper.
   pub fn sample(&self, cur_time: TimeFromStart) -> Option<ResultDistribution> {
     let historical_estimate = self.calculate_historical_distribution(cur_time);
     /* FIXME: implement online estimation with decay rate! */
