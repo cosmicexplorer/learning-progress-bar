@@ -28,7 +28,9 @@
 use runtime_inference::{invocation::lines::*, *};
 use super_process::{exe, stream};
 
+use base64::{display::Base64Display, engine::general_purpose::STANDARD};
 use clap::{Args, Parser, Subcommand};
+use rand::{thread_rng, CryptoRng, Rng};
 use tokio;
 
 use std::{
@@ -76,6 +78,9 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
       let exe = exe::Exe::from(&argv[0]);
       let argv: exe::Argv = argv[1..].to_vec().into();
 
+      let id: [u8; 10] = thread_rng().gen();
+      let id = Base64Display::new(&id, &STANDARD);
+
       let command = exe::Command {
         exe,
         argv,
@@ -92,7 +97,7 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
         .expect("open log file");
 
       log_file
-        .write_fmt(format_args!("[COMMAND] {0:?}\n", command))
+        .write_fmt(format_args!("{}@ [COMMAND] {:?}\n", id, command))
         .expect("command line log");
 
       while match stamper.emit_stamped(&mut process).await {
@@ -104,12 +109,12 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
             match stdio_line {
               stream::StdioLine::Out(line) => {
                 log_file
-                  .write_fmt(format_args!("{0:?}: [STDOUT] {1}\n", time, line))
+                  .write_fmt(format_args!("{}@ {:?}: [STDOUT] {}\n", id, time, line))
                   .expect("stdout");
               },
               stream::StdioLine::Err(line) => {
                 log_file
-                  .write_fmt(format_args!("{0:?}: [STDERR] {1}\n", time, line))
+                  .write_fmt(format_args!("{}@ {:?}: [STDERR] {}\n", id, time, line))
                   .expect("stderr");
               },
             };
@@ -119,12 +124,12 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
             match r {
               Ok(()) => {
                 log_file
-                  .write_fmt(format_args!("{0:?}: [EXIT]\n", time))
+                  .write_fmt(format_args!("{}@ {:?}: [EXIT]\n", id, time))
                   .expect("exit");
               },
               Err(e) => {
                 log_file
-                  .write_fmt(format_args!("{0:?}: [EXIT-ERR] {1:?}\n", time, e))
+                  .write_fmt(format_args!("{}@ {:?}: [EXIT-ERR] {:?}\n", id, time, e))
                   .expect("exit-err");
               },
             };

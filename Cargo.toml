@@ -10,7 +10,9 @@ edition                 = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+base64 = "0.21"
 clap = { version = "3", features = ["derive"] }
+rand = "0.7"
 runtime-inference = { path = "./runtime-inference" }
 super-process           = { git = "https://github.com/cosmicexplorer/super-process", rev = "a0b90583b06e9043d62994330e273ee1f16d6e42" }
 tokio = { version = "1", features = ["full"] }
