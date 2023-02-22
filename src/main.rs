@@ -82,7 +82,7 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
         ..Default::default()
       };
       let stamper = EventStamper::now();
-      let mut process = StringProcess::initiate(command).await?;
+      let mut process = StringProcess::initiate(command.clone()).await?;
 
       /* (2) Append timestamped events to the log file. */
       let mut log_file = OpenOptions::new()
@@ -90,6 +90,10 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
         .append(true)
         .open(log_file.clone())
         .expect("open log file");
+
+      log_file
+        .write_fmt(format_args!("[COMMAND] {0:?}\n", command))
+        .expect("command line log");
 
       while match stamper.emit_stamped(&mut process).await {
         Event {
