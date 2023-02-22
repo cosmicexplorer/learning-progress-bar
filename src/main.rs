@@ -35,7 +35,7 @@ use tokio;
 
 use std::{
   fs::{File, OpenOptions},
-  io::Write,
+  io::{self, Write},
   path::PathBuf,
 };
 
@@ -51,7 +51,7 @@ enum CliCommand {
     /// Where to write event logging information to.
     ///
     /// This file will contain a database of timestamped events.
-    #[clap(short, long, parse(from_os_str), default_value = "./output")]
+    #[clap(short, long, parse(from_os_str), default_value = "-")]
     log_file: PathBuf,
 
     /// The command line to execute.
@@ -90,11 +90,16 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
       let mut process = StringProcess::initiate(command.clone()).await?;
 
       /* (2) Append timestamped events to the log file. */
-      let mut log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file.clone())
-        .expect("open log file");
+      let mut log_file: Box<dyn io::Write> = match log_file.to_string_lossy().as_ref() {
+        "-" => Box::new(io::stdout()),
+        log_file => Box::new(
+          OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file.clone())
+            .expect("open log file"),
+        ),
+      };
 
       log_file
         .write_fmt(format_args!("{}@ [COMMAND] {:?}\n", id, command))
@@ -124,8 +129,8 @@ async fn main() -> Result<(), exe::CommandErrorWrapper> {
             match r {
               Ok(()) => {
                 log_file
-                  .write_fmt(format_args!("{}@ {:?}: [EXIT]\n", id, time))
-                  .expect("exit");
+                  .write_fmt(format_args!("{}@ {:?}: [EXIT-SUCCESS]\n", id, time))
+                  .expect("exit-success");
               },
               Err(e) => {
                 log_file
