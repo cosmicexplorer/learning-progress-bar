@@ -12,6 +12,8 @@ edition                 = "2021"
 [dependencies]
 clap = { version = "3", features = ["derive"] }
 runtime-inference = { path = "./runtime-inference" }
+super-process           = { git = "https://github.com/cosmicexplorer/super-process", rev = "a0b90583b06e9043d62994330e273ee1f16d6e42" }
+tokio = { version = "1", features = ["full"] }
 
 [workspace]
 resolver = "2"

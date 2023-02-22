@@ -1,7 +1,7 @@
 /*
  * Description: A progress bar that uses statistics.
  *
- * Copyright (C) 2022 Danny McClanahan <dmcC2@hypnicjerk.ai>
+ * Copyright (C) 2022-2023 Danny McClanahan <dmcC2@hypnicjerk.ai>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
@@ -25,9 +25,17 @@
 #![doc(test(attr(deny(warnings))))]
 #![deny(clippy::all)]
 
-use clap::{Args, Parser, Subcommand};
+use runtime_inference::{invocation::lines::*, *};
+use super_process::{exe, stream};
 
-use std::path::PathBuf;
+use clap::{Args, Parser, Subcommand};
+use tokio;
+
+use std::{
+  fs::{File, OpenOptions},
+  io::Write,
+  path::PathBuf,
+};
 
 /// oh?
 ///
@@ -57,15 +65,73 @@ struct Opts {
   subcommand: CliCommand,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), exe::CommandErrorWrapper> {
   let Opts { subcommand } = Opts::parse();
   println!("subcommand: {:?}", subcommand);
 
   match subcommand {
     CliCommand::ExecuteCli { log_file, argv } => {
       /* (1) Invoke a timestamped process. */
+      let exe = exe::Exe::from(&argv[0]);
+      let argv: exe::Argv = argv[1..].to_vec().into();
+
+      let command = exe::Command {
+        exe,
+        argv,
+        ..Default::default()
+      };
+      let stamper = EventStamper::now();
+      let mut process = StringProcess::initiate(command).await?;
+
       /* (2) Append timestamped events to the log file. */
+      let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file.clone())
+        .expect("open log file");
+
+      while match stamper.emit_stamped(&mut process).await {
+        Event {
+          emission,
+          timestamp: TimeFromStart(time),
+        } => match emission {
+          Emission::Intermediate(stdio_line) => {
+            match stdio_line {
+              stream::StdioLine::Out(line) => {
+                log_file
+                  .write_fmt(format_args!("{0:?}: [STDOUT] {1}\n", time, line))
+                  .expect("stdout");
+              },
+              stream::StdioLine::Err(line) => {
+                log_file
+                  .write_fmt(format_args!("{0:?}: [STDERR] {1}\n", time, line))
+                  .expect("stderr");
+              },
+            };
+            true
+          },
+          Emission::Final(r) => {
+            match r {
+              Ok(()) => {
+                log_file
+                  .write_fmt(format_args!("{0:?}: [EXIT]\n", time))
+                  .expect("exit");
+              },
+              Err(e) => {
+                log_file
+                  .write_fmt(format_args!("{0:?}: [EXIT-ERR] {1:?}\n", time, e))
+                  .expect("exit-err");
+              },
+            };
+            false
+          },
+        },
+      } { /* spin */ }
+
       /* (3) Figure out how to incorporate the progress indicator (carriage return?). */
     },
   }
+
+  Ok(())
 }
